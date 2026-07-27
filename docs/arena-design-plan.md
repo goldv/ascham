@@ -138,7 +138,10 @@ io.ito.arena.util     — Alignment, Sha256
 - `BatchCursor` — **sole owner of the publication protocol** (invariants 1–3 live here and only
   here): batch base offset, rowIndex, precomputed per-column absolute addresses, writer-local
   `varlenEnd[]` and running ts/stat min/max (heap, never in the shared line). See §4c for
-  `endRow()` and the varlen-exhaustion `migrateOpenRow()`.
+  `endRow()` and the varlen-exhaustion `migrateOpenRow()`. **Package-internal** (package-private
+  class and methods): reached only through the two appenders and `SegmentWriter`, so producers
+  cannot drive `seal`/`openBatch` or reorder publication — the appenders are the only way to write
+  rows, `SegmentWriter` the only way to drive lifecycle.
 - `GenericAppender` — descriptor-driven, correctness-first: `beginRow()`, `setBool/setByte/…/setLong`,
   `setFloat/setDouble`, `setDecimal128(col, low, high)`, `setFixedBytes/setBytes(col, DirectBuffer, off, len)`,
   `setNull(col)`, `endRow()`. Delegates all publication to `BatchCursor`.
@@ -173,6 +176,22 @@ io.ito.arena.util     — Alignment, Sha256
   consumers copy and feeding the equivalence suite.
 
 ## 4. Key mechanism decisions
+
+### 4a-bis. Mapping mechanism (M2 implementation note — Agrona 2.x reality)
+
+The spec names `MappedResizeableBuffer` for >2 GB mappings, but that class was **removed in Agrona
+2.x**, and Agrona's `UnsafeBuffer` caps at an `int` capacity (~2 GB). On Java 21 the only other
+routes to a single >2 GB mapping are the FFM `MemorySegment` (preview — banned) or reflective
+`FileChannelImpl.map0` (fragile). So v1 makes a deliberate, isolated choice: **a segment's data
+region is capped at 2 GB, enforced at `createSegment`, and larger tables are handled by
+capacity-triggered rotation** (which the design already provides) — a logical table spans multiple
+≤2 GB segments, exactly as the multi-segment reader tier already expects. The whole file is mapped
+once as a direct buffer; `ControlRegion` (VarHandle) provides ordered access and an Agrona
+`UnsafeBuffer` over the same memory provides plain/bulk data access. This leaves the on-disk byte
+format (`docs/segment-format.md`) unchanged and confines the limit behind `SegmentFile`, so a true
+large-mapping backend (reflective `map0`, or FFM once non-preview on the target JDK) can drop in
+without touching the format or the writer/reader. `SegmentWriter.createSegment` rejects a requested
+capacity above `Integer.MAX_VALUE` with a message pointing at rotation.
 
 ### 4a. Cross-process ordering: one VarHandle over a dedicated control-region mapping
 
