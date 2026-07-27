@@ -129,6 +129,16 @@ public final class SegmentWriter implements AutoCloseable {
         return file;
     }
 
+    /** Package-internal: the shared append engine, handed to {@link RowAppender} subclasses. */
+    BatchCursor cursor() {
+        return cursor;
+    }
+
+    /** Package-internal: the live header, for the typed appender's schema-hash verification. */
+    SegmentHeader header() {
+        return header;
+    }
+
     @Override
     public void close() {
         file.close();

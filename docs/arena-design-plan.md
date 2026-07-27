@@ -213,8 +213,22 @@ producer knows the schema at its own compile time; truly-runtime schemas are wha
 is for. Build-time source gen is deterministic (snapshot-testable), debuggable (real stack traces),
 and dependency-free. Runtime alternatives are all worse for v1: the ClassFile API is preview on 21
 (banned), ASM/ByteBuddy is a dependency plus correctness surface, MethodHandles can't express named
-typed setters. Plain `StringBuilder`-based `SourceWriter` (flat setters, 3–6 lines each); adopt the
+typed setters. Plain `StringBuilder`-based generator (flat setters, 3–6 lines each); adopt the
 palantir JavaPoet fork later only if it grows unwieldy.
+
+**Generated-class shape (as built):** `public final class TradesAppender extends RowAppender`, a
+`public static final String SCHEMA_SHA256` baked from the schema, and a `(SegmentWriter)` constructor
+that calls `super(writer, SCHEMA_SHA256)`. `RowAppender`'s constructor verifies that hash against the
+live segment header (invariant 7 on the codegen path) and grabs the package-private `BatchCursor`.
+Each column gets a named, primitive-typed setter (`setBidPx(long)`, `setSym(DirectBuffer,int,int)`,
+plus `setBidPxNull()`) that forwards to a `protected` `RowAppender` method carrying the baked column
+ordinal — **not** direct buffer writes. Two reasons the setters forward rather than write bytes
+directly: (1) generated code lives in the *consumer's* package and must not reach the package-private
+cursor/data buffer; (2) keeping all byte-writing — offsets, validity RMW, varlen-exhaustion
+migration — in the single `BatchCursor` is what makes the typed and generic appenders provably
+byte-identical (the equivalence test) and stops regenerated code from reordering publication.
+`beginRow`/`endRow` are inherited `final`, so codegen physically cannot reorder the protocol. The
+forwarding is allocation-free (primitives, no boxing), so the hot-path requirement still holds.
 
 ### 4c. Writer accumulation, invariant-2 enforcement, families
 
