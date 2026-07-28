@@ -114,8 +114,7 @@ final class BatchCursor {
 
     void openBatch(int k) {
         if (k >= catalog.capacity()) {
-            throw new IllegalStateException(
-                    "segment full (" + catalog.capacity() + " batches); rotate() required");
+            throw new io.ito.arena.segment.SegmentFullException(catalog.capacity());
         }
         batchIndex = k;
         batchBase = Math.toIntExact(dataRegionOffset + (long) k * batchStride);

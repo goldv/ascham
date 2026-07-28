@@ -347,11 +347,22 @@ type via `VectorSchemaRoot`, nulls included), `PruneTest` (in-progress never pru
   frozen-snapshot stability. `smoke` (0.5 s) runs in the normal suite; `soak` is `@Tag("soak")`, run
   by the `soakTest` task (duration via `-Dio.ito.arena.soak.seconds`).
 
-**M5 — rotation + liveness.** `SegmentDirectory` (`/dev/shm/ito/<table>/<yyyyMMdd>.<seq>.arena`),
-`RotationPolicy` + `DailyRotationPolicy` (UTC boundary or capacity), retention via `Files.delete`
-on the shm path (= `shm_unlink`; kernel refcount keeps mapped readers alive — spec M5 comment),
-`LivenessMonitor`, writer-restart epoch bump. Tests: `RotationTest` (fake clock), `RetentionUnlinkTest`
-(pre-unlink reader still reads), `OrphanDetectionTest`, `EpochBumpOnRestartTest`.
+**M5 — rotation + liveness.** `SegmentDirectory` (`<baseDir>/<table>/<yyyyMMdd>.<seq>.arena`;
+`/dev/shm/ito` in production) — naming, listing, `nextSeq`, `unlink` (= `shm_unlink`), and a header
+`readEpoch`/`latestEpoch`. `RotationPolicy` + `DailyRotationPolicy` (UTC day boundary).
+`LivenessMonitor` (reader-side) — `poll()` → `ALIVE`/`STALLED` off heartbeat staleness, `writerEpoch()`
+for restart detection, `inProgressRowCount()` for stuck detection.
+
+**As built:** the append surface is `RotatingWriter` with `append(Consumer<GenericAppender>)` — the
+row lambda writes one row and rotation is transparent between rows (so a stale appender across a
+rotation is impossible). Time-based rotation comes from the policy; **capacity rotation is
+automatic** — `openBatch` throws `SegmentFullException` when the catalog fills, and `RotatingWriter`
+catches it, rotates, and re-runs the row lambda on the fresh segment. Rotating closes only the
+writer's mapping; readers hold independent mappings and the file survives (unlinked later by
+retention, kept alive for mapped readers by the kernel refcount). Restart bumps the epoch off
+`directory.latestEpoch()+1`. Tests: `RotationTest` (day boundary + capacity, fake clock),
+`RetentionUnlinkTest` (pre-unlink reader still reads; fresh open of the unlinked path fails),
+`EpochBumpOnRestartTest`, `LivenessTest` (heartbeat ALIVE/STALLED + in-progress row count).
 
 ## 6. Risks
 
