@@ -238,6 +238,11 @@ stores, then release-publishes `0 | IN_PROGRESS_BIT` — a reader acquiring the 
 always finds `base_offset` published. `seal()` = plain-store final stats + `seal_nanos`, then one
 release-store clearing bit 63, then open batch *k+1*. No copies anywhere.
 
+Note: `seal()` (and the row-count seal) always opens the next batch eagerly, so after an explicit
+seal a segment carries a trailing empty in-progress batch (row count 0). This is expected — readers
+tolerate empty batches, and the empty in-progress batch is never pruned — but it means a snapshot's
+`batchCount` includes that trailing batch. Batch 0 is opened at `createSegment`.
+
 **Invariant 2 by code structure, not discipline** — `endRow()` is the only method that touches the
 catalog:
 
