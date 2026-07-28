@@ -322,20 +322,30 @@ type via `VectorSchemaRoot`, nulls included), `PruneTest` (in-progress never pru
 
 **M4 — conformance + concurrency.**
 
-- Golden corpus per §4d.
-- **jcstress** (`arena-jcstress`, over a shared direct-buffer `ControlRegion` — same memory-model
-  surface as /dev/shm): `VarlenOffsetsBeforeLengthTest` (acquire length n ⇒ offsets[n] published),
-  `SealBit63Test` (cleared bit 63 ⇒ final stats/sealNanos visible), `ValidityByteRmwTest`
-  (set-only RMW: bits <n exact, bits ≥n old-or-new), `RowCountMonotonicTest` (acquired length
-  never decreases). PR CI runs `-m quick`; nightly runs default mode; never gate merges on full.
-- **JMH**: `AppendBenchmark` (per type incl. varlen), `SealLatencyBenchmark`, `SnapshotBenchmark`
-  (`@Param batchCount ∈ {16, 256, 4096}`). **Zero-alloc as a red/green gate:**
-  `AllocationRegressionTest` invokes the JMH `Runner` programmatically with `GCProfiler`, asserts
-  `·gc.alloc.rate.norm < 1.0 B/op` on the append benchmarks.
-- **Soak**: `WriterReaderSoakTest` `@Tag("soak")` (nightly, hours; 30 s smoke variant in CI) —
-  1 writer + N readers on real `/dev/shm`; asserts monotonic counts, no torn values
-  (self-verifying payloads `value = f(row, col, seed)`), well-formed varlen, snapshot-at-T reads
-  identically at T+long.
+- Golden corpus per §4d. **As built:** `conformance/` holds 8 cases (`GoldenCases`) covering every
+  type plus empty batch, all-null, varlen exact-capacity + migration, varlen empty, FixedSizeBinary
+  widths {1,7,16,33}, in-progress mid-append, and type bounds (incl. Decimal128 ±(2¹²⁷−1)).
+  `GoldenCorpusTest` regenerates each case, byte-compares to the checked-in `.bin`, and reads it back
+  through `SnapshotReader`. `regenerateGoldenCorpus` is the one-command regen. (Deferred: a language-
+  neutral `expected.json` of row values — byte-stability + Java read-back is the v1 check; the `.bin`
+  files are already the cross-language contract.)
+- **jcstress** (`arena-jcstress`): `OffsetsBeforeLengthTest`, `SealBit63Test`, `ValidityByteRmwTest`,
+  `RowCountMonotonicTest` — all 4 pass (no forbidden outcomes). **As built:** they exercise the
+  `getAcquire`/`setRelease` JMM contract directly via `VarHandle` over plain arrays — the exact
+  primitive `ControlRegion` wraps — so they're self-contained (no direct-buffer-per-state cost, no
+  `:arena` dependency). The plugin isn't configuration-cache compatible, so the run task is marked
+  `notCompatibleWithConfigurationCache` (degrades gracefully; cache stays on repo-wide). PR CI runs
+  `-m quick`; nightly runs default mode.
+- **JMH** (`src/jmh`, `me.champeau.jmh` plugin): `AppendBenchmark` (`appendRow` = full 14-column row;
+  `appendBatchAndSeal` = seal latency) and `SnapshotBenchmark` (`@Param batchCount ∈ {16,256,4096}`).
+  **Zero-alloc red/green gate as built:** `AllocationTest` (a normal CI test) measures the append
+  hot path with `ThreadMXBean.getThreadAllocatedBytes` and asserts `< 1.0 B/op` — more deterministic
+  than a forked JMH GC-profiler run and it measures the invariant directly; the JMH benchmarks are
+  on-demand throughput/latency tooling (`./gradlew :arena:jmh`), not a gate.
+- **Soak** (`SoakTest`): 1 writer + N readers over one segment; each row encodes its global index in
+  three columns and readers verify internal consistency (no torn reads), monotonic totals, and
+  frozen-snapshot stability. `smoke` (0.5 s) runs in the normal suite; `soak` is `@Tag("soak")`, run
+  by the `soakTest` task (duration via `-Dio.ito.arena.soak.seconds`).
 
 **M5 — rotation + liveness.** `SegmentDirectory` (`/dev/shm/ito/<table>/<yyyyMMdd>.<seq>.arena`),
 `RotationPolicy` + `DailyRotationPolicy` (UTC boundary or capacity), retention via `Files.delete`
@@ -364,5 +374,7 @@ on the shm path (= `shm_unlink`; kernel refcount keeps mapped readers alive — 
    size expectations; `ZeroCopyTest`/`BatchViewArrowValuesTest` catch at M3, budget slack there.
 8. **Golden-corpus churn** — any format tweak invalidates all golden files (intended); one-command
    regeneration, small files, manifest sha256s make accidental regeneration obvious.
-9. **Gradle configuration-cache vs jmh/jcstress plugins** — scope `--no-configuration-cache` to
-   those tasks if needed, never repo-wide.
+9. **Gradle configuration-cache vs jmh/jcstress plugins** — *resolved:* `me.champeau.jmh` 0.7.3 is
+   config-cache compatible on Gradle 9.5.1; the `io.github.reyerizo.gradle.jcstress` 0.9.0 run task
+   is not, so it's marked `notCompatibleWithConfigurationCache` (graceful degrade for that task; the
+   cache stays enabled repo-wide).

@@ -1,0 +1,12 @@
+{
+  "cases": [
+    {"name":"all_types","schema":"schemas/all_types.arrows","epoch":1,"sequence":1,"clockStart":5000,"clockStep":100,"expectedTotalRows":6,"segmentBytes":16384,"segmentSha256":"77de14f1e295bdc08d83867b0125e1233b91467651b1200e3c0470008bf268b7"},
+    {"name":"all_null","schema":"schemas/all_null.arrows","epoch":1,"sequence":1,"clockStart":5000,"clockStep":100,"expectedTotalRows":3,"segmentBytes":12288,"segmentSha256":"e482a5174cbb9991a01e3d9a3ef541be88fd08ec48b904c2162187ed165fc0c6"},
+    {"name":"empty_batch","schema":"schemas/empty_batch.arrows","epoch":1,"sequence":1,"clockStart":5000,"clockStep":100,"expectedTotalRows":0,"segmentBytes":16384,"segmentSha256":"1299acd0df4e2cc03febd12e773e7fa83ed3cf34a2e73cf0a4c08935fa8ead26"},
+    {"name":"in_progress","schema":"schemas/in_progress.arrows","epoch":1,"sequence":1,"clockStart":5000,"clockStep":100,"expectedTotalRows":5,"segmentBytes":12288,"segmentSha256":"22e894a5b72bf001beb3e589c07003cf1e4e34d2f95ae1db17236991e7a51b72"},
+    {"name":"varlen_exact_capacity","schema":"schemas/varlen_exact_capacity.arrows","epoch":1,"sequence":1,"clockStart":5000,"clockStep":100,"expectedTotalRows":2,"segmentBytes":16384,"segmentSha256":"a1b2c6a09ecedb27ae649f03cad1634af462ef8ce1695b0231657047b97acb59"},
+    {"name":"varlen_empty","schema":"schemas/varlen_empty.arrows","epoch":1,"sequence":1,"clockStart":5000,"clockStep":100,"expectedTotalRows":3,"segmentBytes":16384,"segmentSha256":"f13c5901df10260a011cb7ec9c50150d8065b94eb715208bfbedc280cd58940f"},
+    {"name":"fixed_binary_widths","schema":"schemas/fixed_binary_widths.arrows","epoch":1,"sequence":1,"clockStart":5000,"clockStep":100,"expectedTotalRows":4,"segmentBytes":16384,"segmentSha256":"1533fc7ed8c9b34f6f866cea71dd1f1ef9c9bda21bffc0f662f0ce0e8dc1aee7"},
+    {"name":"type_bounds","schema":"schemas/type_bounds.arrows","epoch":1,"sequence":1,"clockStart":5000,"clockStep":100,"expectedTotalRows":3,"segmentBytes":16384,"segmentSha256":"ef145b23bdb1478ca9ca05d0f00708435cb3c446d1dbb712eb69d445f0e90fa2"}
+  ]
+}

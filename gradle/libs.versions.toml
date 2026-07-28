@@ -7,6 +7,10 @@ agrona = "2.5.0"
 arrow = "19.0.0"
 junit = "5.14.4"
 assertj = "3.27.7"
+jmh = "1.37"
+jmh-plugin = "0.7.3"
+jcstress = "0.16"
+jcstress-plugin = "0.9.0"
 
 [libraries]
 agrona = { module = "org.agrona:agrona", version.ref = "agrona" }
@@ -18,3 +22,11 @@ junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }
 junit-jupiter = { module = "org.junit.jupiter:junit-jupiter" }
 junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
 assertj = { module = "org.assertj:assertj-core", version.ref = "assertj" }
+jmh-core = { module = "org.openjdk.jmh:jmh-core", version.ref = "jmh" }
+jmh-annprocess = { module = "org.openjdk.jmh:jmh-generator-annprocess", version.ref = "jmh" }
+
+jcstress-core = { module = "org.openjdk.jcstress:jcstress-core", version.ref = "jcstress" }
+
+[plugins]
+jmh = { id = "me.champeau.jmh", version.ref = "jmh-plugin" }
+jcstress = { id = "io.github.reyerizo.gradle.jcstress", version.ref = "jcstress-plugin" }

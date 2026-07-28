@@ -10,3 +10,4 @@ dependencyResolutionManagement {
 // Future tiers slot in beside it: include("query"), include("cold").
 // The jcstress ordering harness gets its own subproject at milestone M4: include("arena-jcstress").
 include("arena")
+include("arena-jcstress")

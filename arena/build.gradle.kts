@@ -1,5 +1,6 @@
 plugins {
     `java-library`
+    alias(libs.plugins.jmh)
 }
 
 java {
@@ -35,7 +36,47 @@ val arenaJvmArgs = listOf(
     "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
 )
 
+// The golden corpus is the cross-language contract; it lives at the repo root, not under the module.
+val conformanceDir = rootDir.resolve("conformance")
+
 tasks.test {
-    useJUnitPlatform()
+    useJUnitPlatform {
+        excludeTags("soak") // the long soak runs via the soakTest task
+    }
     jvmArgs(arenaJvmArgs)
+    systemProperty("io.ito.arena.conformance.dir", conformanceDir.absolutePath)
+}
+
+// JMH throughput/latency benchmarks (src/jmh/java). The zero-allocation gate is a normal test
+// (AllocationTest, via ThreadMXBean); these measure performance and run on demand via `gradlew jmh`.
+jmh {
+    jvmArgs.set(arenaJvmArgs)
+    fork.set(1)
+    warmupIterations.set(3)
+    iterations.set(3)
+    warmup.set("1s")
+    timeOnIteration.set("1s")
+}
+
+// Long-running writer/reader concurrency soak. Duration via -Dio.ito.arena.soak.seconds.
+tasks.register<Test>("soakTest") {
+    group = "verification"
+    description = "Run the concurrency soak (one writer, N readers) for an extended duration"
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    useJUnitPlatform {
+        includeTags("soak")
+    }
+    jvmArgs(arenaJvmArgs)
+    systemProperty("io.ito.arena.conformance.dir", conformanceDir.absolutePath)
+}
+
+// Regenerates the golden corpus. Run manually; any diff to the checked-in files is a format change.
+tasks.register<JavaExec>("regenerateGoldenCorpus") {
+    group = "conformance"
+    description = "Regenerate the golden byte corpus under conformance/"
+    mainClass = "io.ito.arena.conformance.GoldenCorpusGenerator"
+    classpath = sourceSets["test"].runtimeClasspath
+    jvmArgs = arenaJvmArgs
+    args(conformanceDir.absolutePath)
 }
