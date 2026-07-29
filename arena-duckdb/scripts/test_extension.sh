@@ -97,6 +97,37 @@ else
 fi
 rm -rf "$SEGDIR"
 
+# --- D5: arena_dir setting + replacement scan (SELECT * FROM <table>) ---
+BASE=$(mktemp -d)
+mkdir -p "$BASE/quotes"
+cp "$G/all_types.bin" "$BASE/quotes/20260101.0.arena"
+cp "$G/all_types.bin" "$BASE/quotes/20260101.1.arena"
+
+rs_count=$(DUCKDB="$DUCKDB" "$HERE/scripts/run_duckdb.sh" "LOAD '$EXT'" "SET arena_dir='$BASE'" \
+    "SELECT count(*)::BIGINT FROM quotes" 2>&1 | tail -1)
+if [[ "$rs_count" == "12" ]]; then
+    echo "  [PASS] replacement scan: SELECT FROM quotes (2 segments = 12 rows)"
+else
+    echo "  [FAIL] replacement scan (got '$rs_count', expected 12)"; fail=1
+fi
+
+rs_push=$(DUCKDB="$DUCKDB" "$HERE/scripts/run_duckdb.sh" "LOAD '$EXT'" "SET arena_dir='$BASE'" \
+    "SELECT count(*)::BIGINT FROM quotes WHERE i8 >= 4" 2>&1 | tail -1)
+if [[ "$rs_push" == "4" ]]; then
+    echo "  [PASS] replacement scan: pushdown applies (WHERE i8>=4)"
+else
+    echo "  [FAIL] replacement scan pushdown (got '$rs_push', expected 4)"; fail=1
+fi
+
+rs_env=$(ARENA_DIR="$BASE" DUCKDB="$DUCKDB" "$HERE/scripts/run_duckdb.sh" "LOAD '$EXT'" \
+    "SELECT count(*)::BIGINT FROM quotes" 2>&1 | tail -1)
+if [[ "$rs_env" == "12" ]]; then
+    echo "  [PASS] arena_dir default from \$ARENA_DIR env"
+else
+    echo "  [FAIL] arena_dir env var (got '$rs_env')"; fail=1
+fi
+rm -rf "$BASE"
+
 if [[ $fail -eq 0 ]]; then
     echo "extension tests: all passed"
 else

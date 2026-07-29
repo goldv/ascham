@@ -17,8 +17,8 @@ is what makes the planned move to its own repository a directory copy.
 | **`arena_scan(path)`** (`src/scan/`) — columnar table function: dynamic schema from the decoded logical types, all 13 v1 types (incl. ns timestamps, `DECIMAL(p,s)`, unsigned ints, varlen), null validity, and live in-progress batches | **Implemented & tested** (21 SQL tests green via `scripts/test_extension.sh`) |
 | **D4 — pushdown + parallelism:** projection pushdown, filter pushdown (row-exact via DuckDB's own applicator) with **zone-map batch pruning** on the catalog `time`/`stats` min-max, and a parallel per-(segment,batch) work list | **Implemented & tested** |
 | `arena_segments(path)` — batch-catalog diagnostic table function | **Implemented & tested** |
+| **D5 — replacement scan + `arena_dir` setting:** `SELECT * FROM <table>` resolves to `arena_scan('<arena_dir>/<table>')` when that table dir holds segments (pushdown flows through), with `arena_dir` defaulting from `$ARENA_DIR`; plus live-writer integration (`scripts/live_demo.sh`) — a Java writer appends while DuckDB queries the growing, in-progress data | **Implemented & tested** |
 | Zero-copy vector wrapping (`FlatVector::SetData` over the mmap) | Not started — `arena_scan` fills by copy per chunk (correct; a perf optimization remains) |
-| Replacement scan + `arena_dir` setting, live-writer integration | Not started (D5) |
 | Golden expected-value CSVs (`conformance/expected/`, plan §7) → sqllogictest conformance diff | Not started — value correctness is currently pinned by the SQL tests in `scripts/test_extension.sh` |
 
 ### The DuckDB extension — building & running
@@ -42,6 +42,20 @@ DUCKDB=/path/to/duckdb ./scripts/run_duckdb.sh \
 
 # Regression suite (build + SQL checks against the golden corpus).
 DUCKDB=/path/to/duckdb ./scripts/test_extension.sh
+
+# Live demo: a Java writer appends mock quotes while DuckDB queries the growing table
+# (SELECT * FROM quotes resolves via the replacement scan + arena_dir). Shows freshness.
+DUCKDB=/path/to/duckdb ./scripts/live_demo.sh
+```
+
+The replacement scan makes an arena table queryable by name — set `arena_dir` (or `$ARENA_DIR`) to
+the base directory and `SELECT * FROM quotes` scans `<arena_dir>/quotes/`, with projection/filter
+pushdown flowing through unchanged:
+
+```sh
+DUCKDB=/path/to/duckdb ARENA_DIR=/dev/shm/ito ./scripts/run_duckdb.sh \
+    "LOAD '$(pwd)/build/arena.duckdb_extension'" \
+    "SELECT sym, count(*), max(px) FROM quotes GROUP BY sym"
 ```
 
 ### Environment / build model (important)
@@ -103,9 +117,6 @@ The remaining milestones:
 - **Zero-copy vector wrapping:** `arena_scan` currently fills DuckDB vectors by copy per chunk
   (correct). Wrapping the mapped buffers directly (`FlatVector::SetData` with a mapping-pinning
   `VectorBuffer`) removes the copy for the fixed-width/validity paths.
-- **D5 — replacement scan + `arena_dir`:** so `SELECT * FROM quotes` resolves to
-  `arena_scan('<arena_dir>/quotes')`, plus live-writer integration (query the demo writer's
-  segments as it appends).
 - **§7 conformance CSVs:** language-neutral expected values + a sqllogictest diff
   (`arena_scan(...) EXCEPT ALL read_csv(...)`); value correctness is currently pinned by the SQL
   assertions in `scripts/test_extension.sh`.

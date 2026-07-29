@@ -8,8 +8,15 @@
 // The zero-copy `arena_scan` table function (dynamic schema, projection/filter pushdown) builds on
 // this same reader core and lands next; see docs/duckdb-extension-design-plan.md.
 #include "duckdb.hpp"
+#include "duckdb/function/replacement_scan.hpp"
+#include "duckdb/main/config.hpp"
+#include "duckdb/main/database.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
+#include "duckdb/parser/expression/constant_expression.hpp"
+#include "duckdb/parser/expression/function_expression.hpp"
+#include "duckdb/parser/tableref/table_function_ref.hpp"
 
+#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <string>
@@ -107,11 +114,45 @@ void ArenaSegmentsScan(ClientContext &, TableFunctionInput &data_p, DataChunk &o
     output.SetCardinality(count);
 }
 
+// Replacement scan: an unknown identifier `quotes` becomes arena_scan('<arena_dir>/quotes') when
+// that table directory exists and holds segments — so `SELECT * FROM quotes` just works. Returns
+// nullptr (letting DuckDB report "table not found", or another replacement scan try) otherwise.
+unique_ptr<TableRef> ArenaReplacement(ClientContext &context, ReplacementScanInput &input,
+                                      optional_ptr<ReplacementScanData>) {
+    Value dir_value;
+    if (!context.TryGetCurrentSetting("arena_dir", dir_value)) {
+        return nullptr;
+    }
+    std::string base = dir_value.ToString();
+    if (base.empty()) {
+        return nullptr;
+    }
+    std::string table_dir = base + "/" + input.table_name;
+    if (arena::list_segments(table_dir).empty()) {  // not an arena table (also never creates the dir)
+        return nullptr;
+    }
+    auto ref = make_uniq<TableFunctionRef>();
+    vector<unique_ptr<ParsedExpression>> children;
+    children.push_back(make_uniq<ConstantExpression>(Value(table_dir)));
+    ref->function = make_uniq<FunctionExpression>("arena_scan", std::move(children));
+    ref->alias = input.table_name;
+    return std::move(ref);
+}
+
 void RegisterArena(ExtensionLoader &loader) {
     TableFunction seg("arena_segments", {LogicalType::VARCHAR}, ArenaSegmentsScan, ArenaSegmentsBind,
                       ArenaSegmentsInit);
     loader.RegisterFunction(seg);
     RegisterArenaScan(loader);
+
+    // `arena_dir` setting (default from $ARENA_DIR, else /dev/shm/ito) + the replacement scan.
+    auto &config = DBConfig::GetConfig(loader.GetDatabaseInstance());
+    if (!config.HasExtensionOption("arena_dir")) {
+        const char *env_dir = std::getenv("ARENA_DIR");
+        config.AddExtensionOption("arena_dir", "Base directory holding arena table dirs (<arena_dir>/<table>/)",
+                                  LogicalType::VARCHAR, Value(env_dir ? env_dir : "/dev/shm/ito"));
+    }
+    config.replacement_scans.emplace_back(ArenaReplacement);
 }
 
 }  // namespace

@@ -80,3 +80,11 @@ tasks.register<JavaExec>("regenerateGoldenCorpus") {
     jvmArgs = arenaJvmArgs
     args(conformanceDir.absolutePath)
 }
+
+tasks.register<JavaExec>("runLiveWriter") {
+    group = "demo"
+    description = "Append mock quotes to an arena table dir (args: <baseDir> [table] [rowsPerSec] [seconds])"
+    mainClass = "io.ito.arena.demo.LiveWriterMain"
+    classpath = sourceSets["test"].runtimeClasspath
+    jvmArgs = arenaJvmArgs
+}
