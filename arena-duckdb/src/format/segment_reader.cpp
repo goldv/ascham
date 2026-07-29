@@ -94,6 +94,10 @@ std::int64_t SegmentReader::heartbeat_acquire() const {
     return acquire_i64(file_.data(), fmt::HDR_HEARTBEAT);
 }
 
+std::pair<const std::uint8_t*, std::int64_t> SegmentReader::embedded_schema() const {
+    return {file_.data() + header_.schema_offset, header_.schema_length};
+}
+
 const std::uint8_t* SegmentReader::batch_base(int batch) const {
     return file_.data() + batches_[static_cast<std::size_t>(batch)].base_offset;
 }

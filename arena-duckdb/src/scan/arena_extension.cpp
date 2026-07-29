@@ -20,6 +20,9 @@
 #include "format/table_dir.hpp"
 
 namespace duckdb {
+
+void RegisterArenaScan(ExtensionLoader &loader);  // arena_scan.cpp
+
 namespace {
 
 struct SegRow {
@@ -108,6 +111,7 @@ void RegisterArena(ExtensionLoader &loader) {
     TableFunction seg("arena_segments", {LogicalType::VARCHAR}, ArenaSegmentsScan, ArenaSegmentsBind,
                       ArenaSegmentsInit);
     loader.RegisterFunction(seg);
+    RegisterArenaScan(loader);
 }
 
 }  // namespace

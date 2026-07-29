@@ -55,6 +55,9 @@ public:
     // Re-reads the live heartbeat (acquire) for liveness checks; everything else is frozen.
     std::int64_t heartbeat_acquire() const;
 
+    // The embedded canonical Arrow IPC schema message bytes (decode via TableSchema::decode).
+    std::pair<const std::uint8_t*, std::int64_t> embedded_schema() const;
+
     // --- Physical value accessors. `batch` indexes batches(); `row < batches()[batch].row_count`. ---
 
     bool is_valid(int batch, int row, int col) const;

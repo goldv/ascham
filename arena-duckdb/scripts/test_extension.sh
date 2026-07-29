@@ -44,6 +44,27 @@ check "varlen_empty: sealed batch of 3 rows" \
 check "unknown file: clean error" \
     "SELECT * FROM arena_segments('$G/does_not_exist.bin')" "arena_segments"
 
+# --- arena_scan (the columnar table function) ---
+check "arena_scan: all rows incl. the in-progress batch" \
+    "SELECT count(*)::BIGINT AS r FROM arena_scan('$G/all_types.bin')" "6"
+check "arena_scan: typed aggregation with WHERE" \
+    "SELECT sum(u16)::BIGINT AS r FROM arena_scan('$G/all_types.bin') WHERE flag" "42"
+check "arena_scan: nanosecond timestamp precision" \
+    "SELECT ts::VARCHAR AS r FROM arena_scan('$G/all_types.bin') WHERE i8 = 1" "2023-11-14 22:13:20.000000001"
+check "arena_scan: decimal(38,9) scale preserved" \
+    "SELECT dec::VARCHAR AS r FROM arena_scan('$G/all_types.bin') WHERE i8 = 1" "0.123456789"
+check "arena_scan: date and time round-trip" \
+    "SELECT d32::VARCHAR||' '||t64::VARCHAR AS r FROM arena_scan('$G/all_types.bin') WHERE i8 = 1" \
+    "2022-01-09 00:00:00.000001"
+check "arena_scan: varlen (utf8) value" \
+    "SELECT sym AS r FROM arena_scan('$G/all_types.bin') WHERE i8 = 3" "s3"
+check "arena_scan: unsigned bigint maximum" \
+    "SELECT u64::VARCHAR AS r FROM arena_scan('$G/type_bounds.bin') WHERE u64 > 0" "18446744073709551615"
+check "arena_scan: null validity" \
+    "SELECT count(*)::BIGINT AS r FROM arena_scan('$G/all_null.bin') WHERE i32 IS NULL" "3"
+check "arena_scan: empty varlen strings" \
+    "SELECT count(*)::BIGINT AS r FROM arena_scan('$G/varlen_empty.bin') WHERE sym = ''" "3"
+
 if [[ $fail -eq 0 ]]; then
     echo "extension tests: all passed"
 else

@@ -13,26 +13,31 @@ is what makes the planned move to its own repository a directory copy.
 
 | Layer | State |
 |---|---|
-| **Reader core** (`src/format/`) — mmap, header + schema-hash verify, layout decode, catalog snapshot (acquire loads), physical value accessors, segment discovery | **Implemented & tested** (12 conformance tests green against `conformance/golden/*.bin`) |
-| **DuckDB extension toolchain** — loadable `.duckdb_extension` builds, footers, and loads; `arena_segments()` diagnostic table function | **Implemented & tested** (7 SQL tests green via `scripts/test_extension.sh`) |
-| Schema decode (`src/format/schema.*`) — nanoarrow IPC decode of the embedded Arrow schema → logical types + `arena.*` metadata | Not started (needed by `arena_scan`) |
-| `arena_scan` (`src/scan/`) — dynamic-schema zero-copy table function, projection/filter (zone-map) pushdown, replacement scan | Not started (D3–D5) |
-| Golden expected-value CSVs (`conformance/expected/`, plan §7) | Deferred to `arena_scan` — the CSV formatting is coupled to the DuckDB type-mapping decisions (ns timestamps, `TIME`, decimals) locked there |
+| **Reader core** (`src/format/`) — mmap, header + schema-hash verify, layout decode, catalog snapshot (acquire loads), physical value accessors, segment discovery, **schema decode** (nanoarrow IPC → logical types + `arena.*` metadata) | **Implemented & tested** (15 conformance tests green against `conformance/golden/*.bin`) |
+| **`arena_scan(path)`** (`src/scan/`) — columnar table function: dynamic schema from the decoded logical types, all 13 v1 types (incl. ns timestamps, `DECIMAL(p,s)`, unsigned ints, varlen), null validity, and live in-progress batches | **Implemented & tested** (16 SQL tests green via `scripts/test_extension.sh`) |
+| `arena_segments(path)` — batch-catalog diagnostic table function | **Implemented & tested** |
+| Filter (zone-map) / projection pushdown, parallel scan, zero-copy vector wrapping | Not started (D4) — `arena_scan` v1 is sequential, correctness-first (copy per chunk) |
+| Replacement scan + `arena_dir` setting, live-writer integration | Not started (D5) |
+| Golden expected-value CSVs (`conformance/expected/`, plan §7) → sqllogictest conformance diff | Not started — value correctness is currently pinned by the SQL tests in `scripts/test_extension.sh` |
 
 ### The DuckDB extension — building & running
 
-`arena_segments(path)` exposes the batch catalog of a segment file (or a table directory) as SQL:
-one row per (segment, batch) with row counts, sealed flag, catalog zone-map stats, seal time, and
-the live heartbeat. It is the reader core surfaced through DuckDB, and it works today:
+Two table functions, both working today:
+
+- **`arena_scan(path)`** — the columnar scan. `SELECT * FROM arena_scan('…')` returns the segment's
+  rows with the correct DuckDB types (the schema is decoded from the segment), including live
+  in-progress batches. Full SQL applies: projections, `WHERE`, joins, aggregations.
+- **`arena_segments(path)`** — the batch-catalog diagnostic: one row per (segment, batch) with row
+  counts, sealed flag, catalog zone-map stats, seal time, and the live heartbeat.
 
 ```sh
 # Build the loadable extension against a local DuckDB build (see Environment note below).
 DUCKDB=/path/to/duckdb ./scripts/build_extension.sh
 
-# Query a golden segment through DuckDB SQL (via the libduckdb.so host harness).
+# Query arena data through DuckDB SQL (via the libduckdb.so host harness).
 DUCKDB=/path/to/duckdb ./scripts/run_duckdb.sh \
     "LOAD '$(pwd)/build/arena.duckdb_extension'" \
-    "SELECT batch, rows, sealed, ts_min, ts_max, stat_max FROM arena_segments('../conformance/golden/all_types.bin')"
+    "SELECT sym, i64, ts FROM arena_scan('../conformance/golden/all_types.bin') WHERE i8 >= 3"
 
 # Regression suite (build + SQL checks against the golden corpus).
 DUCKDB=/path/to/duckdb ./scripts/test_extension.sh
@@ -43,10 +48,10 @@ DUCKDB=/path/to/duckdb ./scripts/test_extension.sh
 The extension is built as a **standalone loadable** against an existing DuckDB build — DuckDB is
 **not** rebuilt. Key facts discovered while wiring this up (they explain the scripts):
 
-- **Version:** the local DuckDB is on `main` (`v1.6.0-dev`, source_id `ee6ce3cd2d`), not the plan's
-  pinned v1.5.5. The extension is built against and loads into *this* build (versions match by the
-  footer's source_id). Loading into `duckdb_jdbc` 1.5.5.0 (the Flight server target) needs a
-  version-matched build — a D6 concern.
+- **Version:** built against DuckDB **v1.5.5** (the plan's pinned version, matching `duckdb_jdbc`
+  1.5.5.0). The footer version string DuckDB validates is a release tag (`v1.5.5`) for release
+  builds but the git hash for dev builds, so `build_extension.sh` reads it straight from a footer
+  DuckDB itself stamped (its built-in parquet extension) rather than guessing.
 - **No DuckDB link:** loadable extensions resolve DuckDB symbols from the host at `dlopen`, so we
   compile + link a plain shared object (`-shared`, no `libduckdb`), reusing DuckDB's own include set
   and flags (C++17, `-O3 -fPIC`) for an exact ABI match.
@@ -89,16 +94,20 @@ Requires only a C++20 compiler (tested with g++ 15):
 make test            # builds src/format/ + test/cpp/ and runs the conformance suite
 ```
 
-## Next: `arena_scan`
+## Next
 
-`arena_segments` proves the reader core ↔ DuckDB bridge with a fixed scalar schema. The headline
-table function `arena_scan(path)` — dynamic schema, **zero-copy** vectors over the mapped segment,
-projection/filter (zone-map) pushdown, and a replacement scan so `SELECT * FROM quotes` just works —
-is next. It needs the one missing reader-core piece: **schema decode** (`src/format/schema.*`),
-vendoring nanoarrow 0.8.0 to turn the embedded Arrow IPC schema into logical types + `arena.*`
-metadata (the layout descriptor gives physical kind/width but not logical type). Then the plan's §7
-expected-value CSVs and the sqllogictest conformance diff (`arena_scan(...) EXCEPT ALL read_csv(...)`)
-land, followed by pushdown/parallelism (D4) and the live-writer integration (D5).
+`arena_scan` v1 is a correct, sequential scan (copy per chunk). The remaining milestones:
+
+- **D4 — pushdown + parallelism:** projection column-ids, filter pushdown mapped onto the catalog
+  zone maps (`arena.time_column`/`stats_column` min-max, already decoded) to skip sealed batches,
+  a parallel per-(segment,batch) work list, and zero-copy vector wrapping (`FlatVector::SetData`
+  over the mmap with a mapping-pinning `VectorBuffer`).
+- **D5 — replacement scan + `arena_dir`:** so `SELECT * FROM quotes` resolves to
+  `arena_scan('<arena_dir>/quotes')`, plus live-writer integration (query the demo writer's
+  segments as it appends).
+- **§7 conformance CSVs:** language-neutral expected values + a sqllogictest diff
+  (`arena_scan(...) EXCEPT ALL read_csv(...)`); value correctness is currently pinned by the SQL
+  assertions in `scripts/test_extension.sh`.
 
 The reader core built here is the foundation all of that sits on: the DuckDB scan turns
 `SegmentReader` batches into DuckDB vectors, and the zone-map pushdown filters on the catalog
