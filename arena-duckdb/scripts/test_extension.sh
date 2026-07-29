@@ -65,6 +65,38 @@ check "arena_scan: null validity" \
 check "arena_scan: empty varlen strings" \
     "SELECT count(*)::BIGINT AS r FROM arena_scan('$G/varlen_empty.bin') WHERE sym = ''" "3"
 
+# --- D4: filter pushdown (row-exact), zone-map pruning, parallelism ---
+check "pushdown: equality filter applied exactly" \
+    "SELECT count(*)::BIGINT AS r FROM arena_scan('$G/all_types.bin') WHERE i8 = 5" "1"
+check "pushdown: compound filter (LIKE + range, two columns)" \
+    "SELECT count(*)::BIGINT AS r FROM arena_scan('$G/all_types.bin') WHERE sym LIKE 's_' AND i64 > 1000000" "4"
+
+SEGDIR=$(mktemp -d)
+for s in 0 1 2; do cp "$G/all_types.bin" "$SEGDIR/20260101.$s.arena"; done
+check "parallel: 3 segments = 18 rows" \
+    "SELECT count(*)::BIGINT AS r FROM arena_scan('$SEGDIR')" "18"
+check "zone-map: result stays exact under pruning" \
+    "SELECT count(*)::BIGINT AS r FROM arena_scan('$SEGDIR') WHERE i64 > 3500000" "6"
+
+zout=$(ARENA_SCAN_DEBUG=1 DUCKDB="$DUCKDB" "$HERE/scripts/run_duckdb.sh" "LOAD '$EXT'" \
+    "SELECT count(*) FROM arena_scan('$SEGDIR') WHERE i64 > 3500000" 2>&1)
+if grep -qF "kept 3 of 6" <<<"$zout"; then
+    echo "  [PASS] zone-map prunes 3 of 6 sealed batches"
+else
+    echo "  [FAIL] zone-map pruning (expected 'kept 3 of 6')"; fail=1
+fi
+
+serial=$(DUCKDB="$DUCKDB" "$HERE/scripts/run_duckdb.sh" "LOAD '$EXT'" "PRAGMA threads=1" \
+    "SELECT sum(i64)::BIGINT FROM arena_scan('$SEGDIR')" 2>&1 | tail -1)
+parallel=$(DUCKDB="$DUCKDB" "$HERE/scripts/run_duckdb.sh" "LOAD '$EXT'" "PRAGMA threads=8" \
+    "SELECT sum(i64)::BIGINT FROM arena_scan('$SEGDIR')" 2>&1 | tail -1)
+if [[ -n "$serial" && "$serial" == "$parallel" ]]; then
+    echo "  [PASS] parallel result matches serial ($serial)"
+else
+    echo "  [FAIL] parallel determinism (serial=$serial parallel=$parallel)"; fail=1
+fi
+rm -rf "$SEGDIR"
+
 if [[ $fail -eq 0 ]]; then
     echo "extension tests: all passed"
 else

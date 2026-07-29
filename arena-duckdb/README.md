@@ -14,9 +14,10 @@ is what makes the planned move to its own repository a directory copy.
 | Layer | State |
 |---|---|
 | **Reader core** (`src/format/`) — mmap, header + schema-hash verify, layout decode, catalog snapshot (acquire loads), physical value accessors, segment discovery, **schema decode** (nanoarrow IPC → logical types + `arena.*` metadata) | **Implemented & tested** (15 conformance tests green against `conformance/golden/*.bin`) |
-| **`arena_scan(path)`** (`src/scan/`) — columnar table function: dynamic schema from the decoded logical types, all 13 v1 types (incl. ns timestamps, `DECIMAL(p,s)`, unsigned ints, varlen), null validity, and live in-progress batches | **Implemented & tested** (16 SQL tests green via `scripts/test_extension.sh`) |
+| **`arena_scan(path)`** (`src/scan/`) — columnar table function: dynamic schema from the decoded logical types, all 13 v1 types (incl. ns timestamps, `DECIMAL(p,s)`, unsigned ints, varlen), null validity, and live in-progress batches | **Implemented & tested** (21 SQL tests green via `scripts/test_extension.sh`) |
+| **D4 — pushdown + parallelism:** projection pushdown, filter pushdown (row-exact via DuckDB's own applicator) with **zone-map batch pruning** on the catalog `time`/`stats` min-max, and a parallel per-(segment,batch) work list | **Implemented & tested** |
 | `arena_segments(path)` — batch-catalog diagnostic table function | **Implemented & tested** |
-| Filter (zone-map) / projection pushdown, parallel scan, zero-copy vector wrapping | Not started (D4) — `arena_scan` v1 is sequential, correctness-first (copy per chunk) |
+| Zero-copy vector wrapping (`FlatVector::SetData` over the mmap) | Not started — `arena_scan` fills by copy per chunk (correct; a perf optimization remains) |
 | Replacement scan + `arena_dir` setting, live-writer integration | Not started (D5) |
 | Golden expected-value CSVs (`conformance/expected/`, plan §7) → sqllogictest conformance diff | Not started — value correctness is currently pinned by the SQL tests in `scripts/test_extension.sh` |
 
@@ -96,12 +97,12 @@ make test            # builds src/format/ + test/cpp/ and runs the conformance s
 
 ## Next
 
-`arena_scan` v1 is a correct, sequential scan (copy per chunk). The remaining milestones:
+`arena_scan` does projection + filter pushdown (with zone-map batch pruning) and parallel scans.
+The remaining milestones:
 
-- **D4 — pushdown + parallelism:** projection column-ids, filter pushdown mapped onto the catalog
-  zone maps (`arena.time_column`/`stats_column` min-max, already decoded) to skip sealed batches,
-  a parallel per-(segment,batch) work list, and zero-copy vector wrapping (`FlatVector::SetData`
-  over the mmap with a mapping-pinning `VectorBuffer`).
+- **Zero-copy vector wrapping:** `arena_scan` currently fills DuckDB vectors by copy per chunk
+  (correct). Wrapping the mapped buffers directly (`FlatVector::SetData` with a mapping-pinning
+  `VectorBuffer`) removes the copy for the fixed-width/validity paths.
 - **D5 — replacement scan + `arena_dir`:** so `SELECT * FROM quotes` resolves to
   `arena_scan('<arena_dir>/quotes')`, plus live-writer integration (query the demo writer's
   segments as it appends).
