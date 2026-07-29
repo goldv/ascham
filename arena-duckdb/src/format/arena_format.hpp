@@ -5,15 +5,15 @@
 // (src/format/) deliberately has NO DuckDB dependency — it is the reusable C++ arena reader.
 #pragma once
 
-#include <bit>
 #include <cstdint>
 #include <cstring>
 
 namespace arena {
 
 // The format is little-endian throughout, matching x86-64 / aarch64 hosts (segment-format.md
-// "Conventions"). We read values with memcpy (alignment-safe) and never byte-swap.
-static_assert(std::endian::native == std::endian::little,
+// "Conventions"). We read values with memcpy (alignment-safe) and never byte-swap. (C++17-safe
+// endianness check via the compiler macro, so this header compiles alongside DuckDB's C++17 build.)
+static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__,
               "the arena format is little-endian; a big-endian host would need byte swapping");
 
 namespace fmt {
