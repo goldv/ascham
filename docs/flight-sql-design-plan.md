@@ -11,6 +11,12 @@ memory → zero-copy Arrow → DuckDB → Flight SQL → standard tooling.
 Status: **design — implementation gated on the F1–F6 milestones below**, exactly as
 `arena-design-plan.md` gated M0–M5.
 
+> **Addendum (2026-07-30):** [`cold-tier-design-plan.md`](cold-tier-design-plan.md) supersedes
+> parts of this design — see §12 below. In short: arena tables are served via the native `arena`
+> DuckDB extension (`LOAD` + `SET arena_dir`) instead of `registerArrowStream`, restoring
+> projection/filter pushdown, and each served table becomes a per-connection **union view** over
+> realtime (arena) + historical (Iceberg) data around a per-table cutover watermark.
+
 Verified up-front (Maven Central / duckdb-java source):
 
 - `org.apache.arrow:flight-core`, `flight-sql`, `flight-sql-jdbc-driver` at **19.0.0** (matching
@@ -352,3 +358,22 @@ surfaces.
    ledgers); `qAlloc` bounds and leak-checks the result path. Accepted v1.
 10. **Backpressure** — `putNext()` blocks on gRPC flow control; a slow client pins that query's
     mappings and DuckDB result for the stream duration. Stream deadline is v2.
+
+## 12. Addendum: cold-tier integration (2026-07-30)
+
+Designed in full in [`cold-tier-design-plan.md`](cold-tier-design-plan.md); the deltas to this
+plan, to be folded in when its milestones land:
+
+- **Arena serving path**: per-query connection setup becomes `LOAD arena; SET arena_dir;` — the
+  native extension replaces `registerArrowStream` for arena tables (as the extension plan's D6
+  anticipated). This removes the `referencedTables(sql)` name-sniffing (§6.3) and closes Risk 3
+  (no pushdown): projection/filter pushdown and zone-map pruning apply end-to-end.
+- **Historical data**: connection setup additionally runs `LOAD iceberg; CREATE SECRET …;
+  ATTACH … AS hist;` and, per served table, `CREATE VIEW <t> AS <hist WHERE ts < cutover UNION ALL
+  arena_scan WHERE ts >= cutover>` — one logical name spans realtime + Iceberg history.
+- **`CutoverTracker`** (new server singleton): background poll of `hist.ito_meta.roll_log`
+  (TTL 60 s) caches the per-table cutover; per-query connections read the cache — no per-query
+  catalog round-trips. Pre-attached connection pooling mitigates per-query `ATTACH` cost.
+- **Cross-plan invariant**: the cutover-cache TTL must be **much smaller than** the roller's
+  unlink grace period (60 s vs ≥ 15 min defaults) — see cold-tier plan §3. Violating it risks a
+  stale-cutover query missing just-unlinked arena data.
