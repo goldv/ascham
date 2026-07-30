@@ -3,7 +3,9 @@
 Native C++ DuckDB extension for querying [arena](../docs/arena-design-plan.md) shared-memory
 columnar segments directly — with projection/filter pushdown and a replacement scan so arena tables
 are queryable by name. See [`docs/duckdb-extension-design-plan.md`](../docs/duckdb-extension-design-plan.md)
-for the full design (milestones D1–D6).
+for the full design (milestones D1–D6), and
+[`docs/code-walkthrough.md`](docs/code-walkthrough.md) for an annotated tour of the source (aimed at
+readers newer to C++ / DuckDB internals).
 
 This directory is deliberately **standalone** — its only coupling to the rest of the repo is
 read-only (`docs/segment-format.md` as the byte contract, `conformance/` as the golden corpus). That
