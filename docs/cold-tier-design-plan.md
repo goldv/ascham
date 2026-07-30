@@ -40,11 +40,16 @@ Sources: duckdb.org iceberg "Writing to Iceberg" docs; "New DuckDB-Iceberg Featu
   **predicate disjointness on `ts`** around a per-table cutover, so no `DISTINCT`/anti-join is ever
   needed and mid-roll queries are exact (§3, §6).
 - **Sorting**: within each day partition, files are written `ORDER BY (sym, ts)` (per-table
-  configurable; default `(ts)` when the table has no symbol column), with the sort order also
-  declared in Iceberg table metadata.
-- **Timestamps**: arena ns timestamps target **Iceberg V3 `timestamp_ns`**
-  (`'format-version'='3'`); pinned contingency if the extension's V3 write path proves immature:
-  documented cast to µs (never a shadow bigint column).
+  configurable; default `(ts)` when the table has no symbol column). Declaring that sort order in
+  Iceberg *metadata* is **not** possible through DuckDB — R1 found `ALTER TABLE … SET SORTED BY`
+  parses but returns "Not implemented" — so v1 gets physical sortedness from the roll's explicit
+  `ORDER BY` (which is what delivers the pruning benefit), and declaring the metadata is deferred to
+  the REST-create path (§10, R4). Worth knowing for later: DuckDB *does* honour a declared sort
+  order on `INSERT` when one exists (hence its `unsafe_iceberg_ignore_sort_order` escape hatch), so
+  declaring it later makes sorting automatic rather than by-convention.
+- **Timestamps**: arena ns timestamps map to **Iceberg V3 `timestamp_ns`** — **verified end-to-end
+  at R1** (§10): `2026-07-30 13:54:22.689010141` round-trips exactly, and min/max ns bounds match
+  the arena source bit-for-bit. The µs-cast contingency is **not needed** and is dropped.
 - **Retention hand-off**: the roller becomes the **sole owner of segment deletion**. The arena's
   count-based retention is disabled by default and demoted to an explicit opt-in emergency
   backstop (§8.1) — today it would happily delete un-archived segments.
@@ -141,9 +146,16 @@ A tiny table: one catalog metadata fetch + one small Parquet read — cheap enou
 
 ### 3.3 Why the data-commit → log-commit gap is safe
 
-The roller commits day D's data to `hist.ito.<t>` first, then appends the `roll_log` row (in one
-transaction if the extension supports the multi-table commit — R1 pins this; correctness does not
-depend on it). A crash between the two leaves cutover at start(D): queries serve D **complete from
+The roller commits day D's data to `hist.ito.<t>` and appends the `roll_log` row in **one
+transaction**. R1 verified this is a genuine atomic multi-table commit, not two sequential ones: a
+`BEGIN; INSERT data; INSERT log; COMMIT;` produces a single `POST /catalog/v1/<wh>/transactions/commit`
+carrying commit actions for both tables (confirmed in the catalog's audit log), and `ROLLBACK`
+leaves both tables empty. So the split-state window below should never occur in practice against a
+catalog that implements multi-table commit.
+
+The recovery logic is kept anyway, as defence in depth: it is what makes the roll safe if the two
+INSERTs ever run outside a transaction, against a catalog without multi-table commit, or if the
+process dies mid-COMMIT. A crash between the two leaves cutover at start(D): queries serve D **complete from
 the arena side** (`ts >= cutover`, and D's segments still exist because unlink is log-gated, I3),
 while hist's extra copy of D is invisible (`ts < cutover`). No dupes, no gaps. A cached cutover is
 only ever stale-*low*, which is the safe direction, provided TTL ≪ unlink grace (I3). In-flight
@@ -177,11 +189,25 @@ Per run, per table `<base>/<t>`:
    (`LivenessMonitor` rule) or `SegmentDirectory.readEpoch(seg) < latestEpoch()`. The
    idle-but-live writer case (no append since midnight, so `DailyRotationPolicy` never fired) is
    closed by the rotate-on-heartbeat fix (§8.1); until then, skip and retry.
-3. **Ensure hist table.** `CREATE TABLE IF NOT EXISTS hist.ito.<t> (…) PARTITIONED BY (day(ts))`
-   with `'format-version'='3'` and the schema mapping of §7. Exact DuckDB DDL for the partition
-   transform, sort order, and table properties is pinned in R1; the designed fallback is a
-   one-time table creation against the REST catalog directly (plain HTTPS from Java or pyiceberg)
-   with DuckDB doing only the `INSERT`s.
+3. **Ensure hist table**, using the DDL pinned by R1 (§10) — two statements, not one:
+
+```sql
+CREATE TABLE IF NOT EXISTS hist.ito.quotes (sym VARCHAR, ts TIMESTAMP_NS, px BIGINT)
+    WITH ('format-version' = '3');          -- quoted key; see the two traps below
+ALTER TABLE hist.ito.quotes SET PARTITIONED BY (day(ts));
+```
+
+   Two traps, both found the hard way at R1 and both silent-ish:
+   - `PARTITIONED BY` inside `CREATE TABLE` is a **parser error** — partitioning is only reachable
+     via the follow-up `ALTER TABLE … SET PARTITIONED BY`, which does correctly store a `day`
+     transform and set `default-spec-id`.
+   - The property key must be **quoted** (`'format-version' = '3'`). The unquoted-identifier form
+     `format_version = 3` is accepted by the parser, silently ignored, and the table is created as
+     **v2** — which then rejects `timestamp_ns` with *"not supported until v3 but format version is
+     v2"*. Failing at table-creation time is the good case; the bad case is not noticing.
+
+   Declared sort-order metadata still needs the REST fallback (one-time `CREATE TABLE` against the
+   catalog's HTTP API from Java, or pyiceberg, with DuckDB doing only the `INSERT`s) — see §1.
 4. **Verify day-alignment (I2)** from the Java-side catalog (`SnapshotReader` batch stats — no
    DuckDB needed): all batches sealed, all `[ts_min, ts_max] ⊆ [D, D+1)`. Violation → alert +
    abort this table's run.
@@ -355,18 +381,32 @@ server), `ColdConfig` (arena base dir, catalog endpoint/credentials, per-table s
 
 ## 9. Local dev stack
 
-New `dev/docker-compose.yml`: **Lakekeeper** (+ its Postgres) + **MinIO** (+ an `mc` bootstrap job
-creating bucket `ito-warehouse`), Lakekeeper bootstrapped with one warehouse `ito` backed by
-`s3://ito-warehouse` (path-style, `http://minio:9000`). Dev auth: Lakekeeper's no-auth dev mode
-for v1; OAuth2 secret wiring documented for later (the DuckDB side is a one-line `CREATE SECRET`
-swap). Client smoke script `dev/hist-attach.sql`:
+**As built** (`dev/docker-compose.yml`, compose project `ito-cold-dev`): **Lakekeeper** 0.13.1
+(+ private Postgres 17, not published) + **MinIO** (+ an `mc` job creating bucket `ito-warehouse`),
+with `dev/catalog-init.sh` bootstrapping the server and creating warehouse `ito` over
+`s3://ito-warehouse`. Both one-shot jobs are idempotent, so `up` is re-runnable. Host ports:
+**8181** catalog, **9100/9101** MinIO API/console — deliberately not MinIO's default 9000, which
+collides with other local stacks. Dev auth is Lakekeeper's no-auth mode; OAuth2 is a
+`CREATE SECRET` swap later.
 
-```sql
-INSTALL iceberg; LOAD iceberg;
-CREATE SECRET minio (TYPE S3, KEY_ID 'minio', SECRET 'minio123',
-                     ENDPOINT 'localhost:9000', URL_STYLE 'path', USE_SSL false);
-ATTACH 'ito' AS hist (TYPE iceberg, ENDPOINT 'http://localhost:8181/catalog');
-```
+Client attach recipe: **`dev/hist-attach.sql`**. Four clauses in it are load-bearing, each of which
+cost a debugging round at R1 — worth reading before changing it:
+
+- `LOAD httpfs` **before** creating the S3 secret: the `S3` secret type lives in httpfs, not iceberg.
+- `AUTHORIZATION_TYPE 'none'` on `ATTACH`: it defaults to `oauth2` and otherwise fails with
+  *"AUTHORIZATION_TYPE is 'oauth2', yet no 'secret' was provided"*.
+- **The warehouse's S3 endpoint must be reachable from both the host and the containers.** An
+  Iceberg REST catalog *vends* its storage endpoint to clients in the LoadTable response, and DuckDB
+  uses that for data-file I/O — so the natural `http://minio:9000` makes every host-client write die
+  with *"Could not resolve hostname"*. The dev stack uses the docker0 gateway
+  (`http://172.17.0.1:9100`), which is a host interface **and** container-reachable, so one value
+  works for both. Override with `ITO_S3_ENDPOINT`.
+- **Credential vending must be ON** (`sts-enabled: true` in the warehouse storage profile). This is
+  not a preference: the catalog always vends a storage config scoped to the table's prefix
+  (`s3://bucket/warehouse/<table-uuid>`), and DuckDB selects secrets by longest-matching scope — so
+  the vended entry always beats a client's own bucket-level `SECRET`. With vending disabled that
+  entry carries no keys, every data-file request goes out anonymous, and MinIO answers
+  **403 AccessDenied**. Enabling vending also means clients need no MinIO keys of their own.
 
 ## 10. Testing
 
@@ -385,7 +425,7 @@ ATTACH 'ito' AS hist (TYPE iceberg, ENDPOINT 'http://localhost:8181/catalog');
 
 | # | Deliverable | Exit tests |
 |---|---|---|
-| **R1** | Dev stack + write-path spike (de-risk, no Java): compose up; from DuckDB CLI, create V3 day-partitioned table, `INSERT … FROM arena_scan(golden segment) ORDER BY sym, ts`, read back | ns timestamps round-trip (or µs contingency recorded); partition/sort DDL syntax pinned (or REST-create fallback pinned); data+log single-txn atomicity answer recorded |
+| **R1** ✅ **done** | Dev stack (`dev/docker-compose.yml`, `dev/catalog-init.sh`, `dev/hist-attach.sql`) + write-path spike `dev/r1-spike.sh`: rolls a real arena segment into a V3 day-partitioned Iceberg table in one transaction with its `roll_log` row, and asserts the result | **All green** — see §10 for the answers. 2,339 rows, arena↔iceberg row parity, ns bounds exact (`…22.689010141`, 2,335 rows carrying sub-µs digits on both sides), format-version 3 + `day` transform stored, partition pruning reads 1 file. Re-runnable as a regression test |
 | **R2** | Arena hardening: seal-on-close, retention gated off + ERROR backstop, rotate-on-heartbeat | `arena_segments()` shows closed segment fully sealed; backstop-fires-ERROR test; idle-writer rotates after midnight test |
 | **R3** | `arena_scan(LIST)` overload | list-scan result == dir-scan filtered to those files; zone-map pruning intact per file |
 | **R4** | `:cold` core roll (single table; §4 protocol; all three recovery branches) | 2-day round-trip: row parity, sortedness, roll_log; kill -9 between data and log commits → rerun converges, zero dupes; larger-than-memory-limit day sorts via spill |
@@ -416,11 +456,25 @@ ATTACH 'ito' AS hist (TYPE iceberg, ENDPOINT 'http://localhost:8181/catalog');
 
 ## 13. Open questions
 
-1. Exact DuckDB 1.5.5 iceberg DDL for partitioned/sorted table creation and settable properties —
-   R1 pins it; REST-create fallback already designed.
-2. Is the data + roll_log two-INSERT transaction a single atomic REST multi-table commit through
-   the extension? — R1; either answer is safe (§3.3).
-3. `CutoverTracker` push-refresh from the roller vs TTL-only — TTL-only in v1; a refresh hook is
+**Resolved by R1** (kept for the record):
+
+1. ~~Exact DuckDB iceberg DDL for partitioned/sorted table creation and properties~~ →
+   `CREATE TABLE … WITH ('format-version' = '3')` (quoted key) **+** a separate
+   `ALTER TABLE … SET PARTITIONED BY (day(ts))`. `PARTITIONED BY` in `CREATE` is a parser error;
+   an unquoted `format_version` is silently ignored (§4 step 3). **Sort order is not settable from
+   DuckDB** (`SET SORTED BY` → "Not implemented") — physical `ORDER BY` in the roll covers v1, and
+   declared sort-order metadata needs the REST-create path (§1, R4).
+2. ~~Is the data + roll_log two-INSERT transaction atomic?~~ → **Yes**, a single
+   `POST /catalog/v1/<wh>/transactions/commit` for both tables, with `ROLLBACK` discarding both
+   (§3.3). The recovery branches stay as defence in depth.
+3. ~~Does Iceberg V3 `timestamp_ns` survive the DuckDB write path?~~ → **Yes, exactly** (§1, §10).
+
+**Still open:**
+
+4. `CutoverTracker` push-refresh from the roller vs TTL-only — TTL-only in v1; a refresh hook is
    trivial to add later.
-4. Where per-table sort columns live — `:cold` config in v1; an `arena.sort_columns` schema
+5. Where per-table sort columns live — `:cold` config in v1; an `arena.sort_columns` schema
    metadata key (beside `arena.time_column`) is the cleaner long-term home.
+6. Whether to declare sort-order metadata via the REST-create path at R4 (which makes DuckDB apply
+   the sort automatically on every INSERT) or keep relying on the roll's explicit `ORDER BY`. Only
+   the former survives someone hand-writing an INSERT.
