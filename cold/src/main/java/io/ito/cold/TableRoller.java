@@ -111,7 +111,20 @@ public final class TableRoller {
 
         // Recovery branch 1: the log already records this day, so the roll completed. Whether the
         // segments are still on disk is R5's problem, not a correctness question.
-        if (executor.isDayLogged(table, day.day())) {
+        Optional<String> rolledBy = executor.rolledBy(table, day.day());
+        if (rolledBy.isPresent()) {
+            String owner = rolledBy.get();
+            String mine = config.arenaBaseDir().resolve(table).toAbsolutePath().normalize().toString();
+            if (owner != null && !owner.equals(mine)) {
+                // Someone else's day, not ours. Skipping it would silently strand this arena's rows
+                // — never archived, never reclaimed, memory growing with nothing but "rolled 0 days"
+                // to show for it. Rolling it anyway would duplicate the day in history. Neither is
+                // acceptable, so stop and make the operator resolve the collision.
+                throw new ColdException("table " + table + " day " + day.day()
+                        + " was already rolled from a different arena (" + owner + ", not " + mine
+                        + "). Two arenas must not share one catalog table: point this roller at a "
+                        + "different namespace, or clear that arena's roll-log entries and data.");
+            }
             LOG.log(System.Logger.Level.DEBUG, "table {0}: day {1} already rolled", table, day.day());
             return new DayResult(day.day(), DayStatus.ALREADY_ROLLED, 0, names);
         }

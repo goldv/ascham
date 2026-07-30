@@ -148,7 +148,7 @@ class RollIT {
                 + arenaBase.resolve("quotes").toAbsolutePath() + "') WHERE ts >= TIMESTAMP '" + D1
                 + "' AND ts < TIMESTAMP '" + D1.plusDays(1) + "'");
         assertThat(rowsInDay(D1)).isEqualTo(400);
-        assertThat(executor.isDayLogged("quotes", D1)).isFalse();
+        assertThat(executor.rolledBy("quotes", D1)).isEmpty();
 
         TableRoller.RollResult result = roller.roll("quotes", TODAY);
 

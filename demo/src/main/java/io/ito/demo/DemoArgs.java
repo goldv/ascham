@@ -61,7 +61,7 @@ final class DemoArgs {
     }
 
     int rate() {
-        return intValue("rate", 1000);
+        return intValue("rate", 50000);
     }
 
     int batchRows() {

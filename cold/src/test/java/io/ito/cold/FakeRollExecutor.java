@@ -42,8 +42,11 @@ final class FakeRollExecutor implements RollExecutor {
     }
 
     @Override
-    public boolean isDayLogged(String table, LocalDate day) {
-        return log.getOrDefault(table, List.of()).stream().anyMatch(l -> l.day().equals(day));
+    public Optional<String> rolledBy(String table, LocalDate day) {
+        return log.getOrDefault(table, List.of()).stream()
+                .filter(l -> l.day().equals(day))
+                .map(Logged::arenaDir)
+                .findFirst();
     }
 
     @Override

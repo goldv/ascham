@@ -55,6 +55,26 @@ class RollServiceTest {
     }
 
     @Test
+    void aDayRolledFromAnotherArenaFailsLoudlyRatherThanSilentlySkipping() {
+        // A roll-log entry written by a *different* arena must not be mistaken for "this day is
+        // done". Skipping would strand this arena's rows forever — never archived, never reclaimed,
+        // shared memory growing, and the only symptom "rolled 0 days". Found in the field: a demo
+        // roll against one arena blocked a completely separate arena's real data.
+        ColdFixtures.writeDays(base, List.of(D1, D2), 10);
+        FakeRollExecutor executor = new FakeRollExecutor();
+        executor.arenaDir = "/some/other/arena/quotes";
+        executor.logDayOnly("quotes", D1, 999, List.of("20260725.0.arena"));
+
+        assertThatThrownBy(() -> new TableRoller(config(), executor).roll("quotes", D4))
+                .isInstanceOf(ColdException.class)
+                .hasMessageContaining("different arena")
+                .hasMessageContaining("/some/other/arena/quotes");
+
+        // And it did not quietly roll the day on top of the foreign one, which would duplicate it.
+        assertThat(executor.rollDayCalls()).isEmpty();
+    }
+
+    @Test
     void everyTableIsDiscoveredAndRolledIndependently() {
         ColdFixtures.writeDays(base, List.of(D1, D2), 10);
         writeSecondTable("trades");

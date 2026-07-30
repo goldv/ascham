@@ -3,6 +3,9 @@ package io.ito.demo;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Random;
+import java.util.stream.IntStream;
+import java.util.stream.Stream;
+
 import org.agrona.concurrent.UnsafeBuffer;
 
 /**
@@ -37,7 +40,7 @@ public final class MarketDataGenerator {
         public boolean isTrade;
     }
 
-    public static final List<String> DEFAULT_SYMBOLS = List.of("AAPL", "MSFT", "GOOG", "AMZN", "NVDA");
+    public static final List<String> DEFAULT_SYMBOLS = Stream.concat(IntStream.range(0, 20000).mapToObj(i -> "XS" + i), Stream.of("AAPL", "MSFT", "GOOG", "AMZN", "NVDA")).toList();
     private static final String[] VENUES = {"XNAS", "ARCA", "BATS"};
     private static final int TICK = 1; // one unit of the 1e-4 price scale
 

@@ -105,7 +105,8 @@ public final class DuckDbRollExecutor implements RollExecutor {
     public Optional<LocalDate> highestRolledDay(String table) {
         try (Statement st = connection.createStatement();
              ResultSet rs = st.executeQuery("SELECT max(day) FROM " + config.qualifiedRollLog()
-                     + " WHERE table_name = " + literal(table))) {
+                     + " WHERE table_name = " + literal(table)
+                     + " AND arena_dir = " + literal(arenaDirOf(table)))) {
             if (rs.next()) {
                 java.sql.Date day = rs.getDate(1);
                 return day == null ? Optional.empty() : Optional.of(day.toLocalDate());
@@ -117,9 +118,15 @@ public final class DuckDbRollExecutor implements RollExecutor {
     }
 
     @Override
-    public boolean isDayLogged(String table, LocalDate day) {
-        return count("SELECT count(*) FROM " + config.qualifiedRollLog()
-                + " WHERE table_name = " + literal(table) + " AND day = DATE " + literal(day.toString())) > 0;
+    public Optional<String> rolledBy(String table, LocalDate day) {
+        try (Statement st = connection.createStatement();
+             ResultSet rs = st.executeQuery("SELECT arena_dir FROM " + config.qualifiedRollLog()
+                     + " WHERE table_name = " + literal(table)
+                     + " AND day = DATE " + literal(day.toString()) + " LIMIT 1")) {
+            return rs.next() ? Optional.ofNullable(rs.getString(1)) : Optional.empty();
+        } catch (SQLException e) {
+            throw new ColdException("failed to read the roll log for " + table + " day " + day, e);
+        }
     }
 
     @Override

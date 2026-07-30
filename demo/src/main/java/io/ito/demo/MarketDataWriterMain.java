@@ -48,8 +48,7 @@ public final class MarketDataWriterMain {
         SystemEpochNanoClock nanoClock = new SystemEpochNanoClock();
 
         System.out.printf("writing quotes + trades to %s%n", dir.toAbsolutePath());
-        System.out.printf("  %d events/s, symbols %s, ~1 trade per %d events%n",
-                rate, String.join(",", symbols), options.quotesPerTrade());
+        System.out.printf("  %d events/s, symbols %d, ~1 trade per %d events%n",rate, symbols.size(), options.quotesPerTrade());
         System.out.println("  Ctrl-C to stop");
 
         long deadlineNanos = options.seconds() > 0

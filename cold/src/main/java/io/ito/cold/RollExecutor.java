@@ -20,13 +20,20 @@ public interface RollExecutor extends AutoCloseable {
     void ensureTable(String table, ArenaSchema schema, List<String> sortColumns);
 
     /**
-     * The highest day recorded as rolled for {@code table}, or empty if none. This is the watermark:
-     * the cutover between historical and realtime data is the start of the following day.
+     * The highest day this arena has recorded as rolled for {@code table}, or empty if none. This is
+     * the watermark: the cutover between historical and realtime data is the start of the following
+     * day. Scoped to this arena, for the same reason as {@link #rolledBy}.
      */
     Optional<LocalDate> highestRolledDay(String table);
 
-    /** Whether {@code (table, day)} already has a roll-log entry. */
-    boolean isDayLogged(String table, LocalDate day);
+    /**
+     * The arena directory that archived {@code (table, day)}, or empty if no run has.
+     *
+     * <p>Returns *who* rolled it rather than a bare yes/no, because a day logged by a different
+     * arena is a misconfiguration, not a completed day: treating it as done would silently strand
+     * this arena's rows — never archived, never reclaimed, memory growing with no error.
+     */
+    Optional<String> rolledBy(String table, LocalDate day);
 
     /**
      * Whether the table already holds data for {@code day}. Used only in recovery, to tell "the roll
