@@ -35,10 +35,20 @@ Two table functions, both working today:
 # Build the loadable extension against a local DuckDB build (see Environment note below).
 DUCKDB=/path/to/duckdb ./scripts/build_extension.sh
 
+# It's a self-contained extension, so it loads in the stock DuckDB CLI like any other:
+duckdb -unsigned -c "LOAD '$(pwd)/build/arena.duckdb_extension';
+                     SELECT sym, i64 FROM arena_scan('../conformance/golden/all_types.bin')"
+# ...and in Python: duckdb.connect(config={'allow_unsigned_extensions':'true'}).load_extension(path)
+
 # Query arena data through DuckDB SQL (via the libduckdb.so host harness).
 DUCKDB=/path/to/duckdb ./scripts/run_duckdb.sh \
     "LOAD '$(pwd)/build/arena.duckdb_extension'" \
     "SELECT sym, i64, ts FROM arena_scan('../conformance/golden/all_types.bin') WHERE i8 >= 3"
+
+# Or from Python via the standard `duckdb` library — see python/ (a uv project pinned to
+# duckdb==1.5.5; renders all types incl. ns timestamps).
+cd python && uv run arena_query.py \
+    "SELECT sym, i64, ts FROM arena_scan('../../conformance/golden/all_types.bin') WHERE i8 >= 3"
 
 # Regression suite (build + SQL checks against the golden corpus).
 DUCKDB=/path/to/duckdb ./scripts/test_extension.sh
@@ -67,16 +77,24 @@ The extension is built as a **standalone loadable** against an existing DuckDB b
   1.5.5.0). The footer version string DuckDB validates is a release tag (`v1.5.5`) for release
   builds but the git hash for dev builds, so `build_extension.sh` reads it straight from a footer
   DuckDB itself stamped (its built-in parquet extension) rather than guessing.
-- **No DuckDB link:** loadable extensions resolve DuckDB symbols from the host at `dlopen`, so we
-  compile + link a plain shared object (`-shared`, no `libduckdb`), reusing DuckDB's own include set
-  and flags (C++17, `-O3 -fPIC`) for an exact ABI match.
-- **`-fno-rtti`:** DuckDB is built with RTTI but its unused class typeinfos are GC'd from the binary,
-  so a default (RTTI) build references symbols the host doesn't provide. Building the extension
-  `-fno-rtti` drops those references; DuckDB's `Cast<>` is `static_cast`, so this is safe.
-- **Host via `libduckdb.so`:** the CLI binary is statically linked and exports **no** symbols, so it
-  cannot host a loadable (its built-in extensions are linked in, not `dlopen`ed). `libduckdb.so`
-  exports the full API, so `test/host/duckdb_host.c` (built against it, the same library
-  `duckdb_jdbc` uses) is the test host. `-unsigned` / `allow_unsigned_extensions=true` is required.
+- **Self-contained (static link):** the extension **statically links** the DuckDB code it calls
+  (`libduckdb_static.a` + third-party archives + the dummy extension-loader stub), so it has **zero
+  undefined `duckdb::` symbols**. That is what official extensions do (json is ~34 MB for the same
+  reason), and it is what makes it load *anywhere* — the DuckDB CLI, the Python `duckdb` module, or
+  any host — because it asks the host for no symbols at `dlopen`. Compiled with DuckDB's own include
+  set and flags (C++17, `-O3 -fPIC`) for an exact ABI match. *(A thin `-shared` build with no static
+  link is ~100× smaller but only loads into a host that exports DuckDB's symbols in the global scope
+  — e.g. an app that links `libduckdb.so` — and fails in the CLI and in Python's `RTLD_LOCAL`-loaded
+  module with an `undefined symbol` error.)*
+- **`-fno-rtti`:** DuckDB is built with RTTI but its unused class typeinfos are GC'd, so a default
+  (RTTI) build references typeinfo symbols not present; `-fno-rtti` drops those references, and
+  DuckDB's `Cast<>` is `static_cast`, so this is safe.
+- **Hosts:** because the extension is self-contained it loads in the **DuckDB CLI**
+  (`duckdb -unsigned`), the **Python `duckdb` module** (`con.load_extension(...)`, no dlopen hacks),
+  and any app linking `libduckdb.so`. `test/host/duckdb_host.c` (built against `libduckdb.so`, the
+  same library `duckdb_jdbc` uses) is the C test host; `python/` (a uv project on the pinned
+  `duckdb` library) is the Python client.
+  `-unsigned` / `allow_unsigned_extensions=true` is required for an unsigned local build.
 - **Footer:** DuckDB's `scripts/append_metadata.cmake` writes the loadable metadata footer
   (platform `linux_amd64`, ABI `CPP`, version = the build's source_id).
 

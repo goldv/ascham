@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
-# Builds the arena DuckDB extension as a standalone loadable (.duckdb_extension) against an existing
-# DuckDB build, without rebuilding DuckDB. Loadable extensions resolve DuckDB symbols from the host
-# at dlopen, so we don't link libduckdb; we only need matching compile flags (C++17, default ABI) and
-# the include set DuckDB used, both reused from the local build for an exact match. The DuckDB
-# metadata footer is appended with DuckDB's own append_metadata.cmake.
+# Builds the arena DuckDB extension as a self-contained loadable (.duckdb_extension) against an
+# existing DuckDB build, without rebuilding DuckDB. We compile with DuckDB's own include set and
+# flags (C++17, -fPIC, -fno-rtti) for an exact ABI match, then **statically link** the DuckDB code
+# we call (libduckdb_static.a + its third-party archives + the dummy extension-loader stub). That
+# leaves the extension with zero undefined `duckdb::` symbols, so it is fully self-contained and
+# loads like any official extension — in the DuckDB CLI, in the Python `duckdb` module (no
+# RTLD_GLOBAL needed), or any host — because it asks the host for no symbols at dlopen. (A thin
+# build that omits the static link is ~100x smaller but only loads into a host that exports DuckDB's
+# symbols globally, e.g. an app linking libduckdb.so; it fails in the CLI and in Python's
+# RTLD_LOCAL-loaded module.) The DuckDB metadata footer is appended with append_metadata.cmake.
 #
 # Usage: DUCKDB=/path/to/duckdb ./scripts/build_extension.sh
 set -euo pipefail
@@ -41,7 +46,24 @@ for src in "$HERE"/src/vendor/nanoarrow/src/*.c; do
 done
 
 EXT="$BUILD/arena.duckdb_extension"
-g++ -shared -o "$EXT" "${OBJS[@]}"
+# Statically link the DuckDB code we reference so the extension is self-contained (0 undefined
+# duckdb:: symbols). --start-group/--end-group resolves cross-archive references; the linker pulls
+# only the objects our 55 references need. The dummy loader stubs out ExtensionHelper::LoadAll (which
+# a pulled-in object references but we never call). jemalloc is excluded so we don't override malloc.
+DUCKDB_STATIC_LIBS=("$DUCKDB_BUILD/src/libduckdb_static.a"
+                    "$DUCKDB_BUILD/extension/libdummy_static_extension_loader.a")
+while IFS= read -r a; do DUCKDB_STATIC_LIBS+=("$a"); done \
+    < <(ls "$DUCKDB_BUILD"/third_party/*/lib*.a | grep -v jemalloc)
+if [[ ! -f "$DUCKDB_BUILD/src/libduckdb_static.a" ]]; then
+    echo "error: $DUCKDB_BUILD/src/libduckdb_static.a not found (build DuckDB with the static lib)" >&2
+    exit 1
+fi
+g++ -shared -o "$EXT" "${OBJS[@]}" -Wl,--start-group "${DUCKDB_STATIC_LIBS[@]}" -Wl,--end-group
+
+undefined=$(nm -D -u "$EXT" 2>/dev/null | grep -c '6duckdb' || true)
+if [[ "$undefined" != "0" ]]; then
+    echo "warning: $undefined undefined duckdb symbols remain — extension may not load in all hosts" >&2
+fi
 
 # The footer must carry the exact version string this DuckDB build validates against. That is a
 # release tag ("v1.5.5") for release builds but the git hash for dev builds — so read it straight
