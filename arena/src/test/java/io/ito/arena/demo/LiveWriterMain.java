@@ -34,7 +34,8 @@ public final class LiveWriterMain {
 
         SegmentDirectory dir = new SegmentDirectory(base, table);
         long epoch = dir.latestEpoch().orElse(0) + 1;
-        RotatingWriter writer = RotatingWriter.open(dir, quotesSchema(table), 4096, epoch, 8,
+        // No writer-side retention: segment reclamation belongs to the cold-tier roll (Retention).
+        RotatingWriter writer = RotatingWriter.open(dir, quotesSchema(table), 4096, epoch,
                 new DailyRotationPolicy(), Clock.systemUTC(), new SystemEpochNanoClock());
 
         String[] symbols = {"AAPL", "MSFT", "GOOG", "AMZN", "NVDA"};

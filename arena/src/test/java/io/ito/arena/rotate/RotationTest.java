@@ -22,7 +22,7 @@ class RotationTest {
         ArenaSchema schema = RotateFixtures.tsStats(64);
         RotateFixtures.MutableClock clock = new RotateFixtures.MutableClock(Instant.parse("2026-07-28T10:00:00Z"));
 
-        try (RotatingWriter writer = RotatingWriter.open(dir, schema, 8, 1L, 10,
+        try (RotatingWriter writer = RotatingWriter.open(dir, schema, 8, 1L,
                 new DailyRotationPolicy(), clock, RotateFixtures.counterNanoClock())) {
             writer.append(RotateFixtures.row(1000, 1));
             writer.append(RotateFixtures.row(1001, 2));
@@ -46,7 +46,7 @@ class RotationTest {
         ArenaSchema schema = RotateFixtures.tsStats(2);
         RotateFixtures.MutableClock clock = new RotateFixtures.MutableClock(Instant.parse("2026-07-28T10:00:00Z"));
 
-        try (RotatingWriter writer = RotatingWriter.open(dir, schema, 2, 1L, 10,
+        try (RotatingWriter writer = RotatingWriter.open(dir, schema, 2, 1L,
                 new DailyRotationPolicy(), clock, RotateFixtures.counterNanoClock())) {
             for (int r = 0; r < 5; r++) {
                 writer.append(RotateFixtures.row(1000 + r, r));

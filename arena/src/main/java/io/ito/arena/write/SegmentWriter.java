@@ -36,6 +36,7 @@ public final class SegmentWriter implements AutoCloseable {
     private final CatalogCodec catalog;
     private final EpochNanoClock clock;
     private final BatchCursor cursor;
+    private boolean closed;
 
     private SegmentWriter(SegmentFile file, ArenaSchema schema, LayoutDescriptor layout,
                           Regions regions, EpochNanoClock clock) {
@@ -139,8 +140,33 @@ public final class SegmentWriter implements AutoCloseable {
         return header;
     }
 
+    /**
+     * Seals the trailing in-progress batch, leaving the segment fully self-describing: every batch
+     * holding rows carries published zone-map stats, so readers can prune it and an archiver can
+     * tell "this segment is finished" from "a writer is still filling it". An empty trailing batch
+     * is left in progress (see {@code BatchCursor.sealFinal}).
+     *
+     * <p>Call before {@link #close()} on the graceful path — {@link io.ito.arena.rotate.RotatingWriter}
+     * does this on rotation and shutdown. It is deliberately <em>not</em> folded into {@code close()}:
+     * a segment whose last batch stays in progress forever is precisely the signature of a writer
+     * that died, and that state must remain both reachable and readable (the golden corpus pins it).
+     *
+     * <p>Idempotent; appending after this is not supported.
+     */
+    public void sealFinal() {
+        if (closed) {
+            return; // the mapping is gone; writing to it would be a use-after-unmap
+        }
+        cursor.sealFinal();
+    }
+
+    /** Releases the mapping. Does not seal — see {@link #sealFinal()}. Idempotent. */
     @Override
     public void close() {
+        if (closed) {
+            return;
+        }
+        closed = true;
         file.close();
     }
 

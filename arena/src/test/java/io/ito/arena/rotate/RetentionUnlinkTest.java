@@ -22,7 +22,8 @@ class RetentionUnlinkTest {
         ArenaSchema schema = RotateFixtures.tsStats(64);
         RotateFixtures.MutableClock clock = new RotateFixtures.MutableClock(Instant.parse("2026-07-28T10:00:00Z"));
 
-        try (RotatingWriter writer = RotatingWriter.open(dir, schema, 8, 1L, 2, // retention = 2
+        try (RotatingWriter writer = RotatingWriter.open(dir, schema, 8, 1L,
+                Retention.emergencyBackstop(2),
                 new DailyRotationPolicy(), clock, RotateFixtures.counterNanoClock())) {
             writer.append(RotateFixtures.row(1000, 1));
             Path oldest = writer.currentPath();

@@ -14,20 +14,25 @@ import org.agrona.concurrent.EpochNanoClock;
 
 /**
  * Drives a table's segment lifecycle: appends into the current segment, rotates on the policy (time)
- * or on capacity exhaustion, and applies retention by unlinking the oldest segments. Rotation is
- * transparent to the producer — {@link #append} always writes into a live segment.
+ * or on capacity exhaustion, and — only if a {@link Retention} backstop is configured — unlinks the
+ * oldest segments. Rotation is transparent to the producer: {@link #append} always writes into a
+ * live segment.
  *
- * <p>Rotating closes only the writer's own mapping of the old segment; readers hold independent
- * mappings and are unaffected, and the old segment's file stays on disk until retention unlinks it
- * (after which mapped readers keep reading via the kernel refcount — spec M5).
+ * <p>Rotating closes only the writer's own mapping of the old segment, which seals its trailing
+ * batch so the segment is left fully self-describing. Readers hold independent mappings and are
+ * unaffected, and the file stays on disk until something unlinks it (after which mapped readers keep
+ * reading via the kernel refcount — spec M5). By default that "something" is not this class: see
+ * {@link Retention}.
  */
 public final class RotatingWriter implements AutoCloseable {
+
+    private static final System.Logger LOG = System.getLogger(RotatingWriter.class.getName());
 
     private final SegmentDirectory directory;
     private final ArenaSchema schema;
     private final int maxBatches;
     private final long epoch;
-    private final int retention;
+    private final Retention retention;
     private final RotationPolicy policy;
     private final Clock clock;
     private final EpochNanoClock nanoClock;
@@ -37,7 +42,7 @@ public final class RotatingWriter implements AutoCloseable {
     private int currentSeq;
 
     private RotatingWriter(SegmentDirectory directory, ArenaSchema schema, int maxBatches, long epoch,
-                           int retention, RotationPolicy policy, Clock clock, EpochNanoClock nanoClock) {
+                           Retention retention, RotationPolicy policy, Clock clock, EpochNanoClock nanoClock) {
         this.directory = directory;
         this.schema = schema;
         this.maxBatches = maxBatches;
@@ -49,12 +54,22 @@ public final class RotatingWriter implements AutoCloseable {
     }
 
     /**
+     * Opens (or resumes) a table for writing, with no writer-side segment reclamation
+     * ({@link Retention#none()}) — the default; see {@link Retention} for why.
+     */
+    public static RotatingWriter open(SegmentDirectory directory, ArenaSchema schema, int maxBatches,
+                                      long epoch, RotationPolicy policy,
+                                      Clock clock, EpochNanoClock nanoClock) {
+        return open(directory, schema, maxBatches, epoch, Retention.none(), policy, clock, nanoClock);
+    }
+
+    /**
      * Opens (or resumes) a table for writing. The first segment is created for the current UTC day
      * at the next free sequence number. On restart, pass a higher {@code epoch} (e.g.
      * {@code directory.latestEpoch()+1}) so readers can detect the new writer instance.
      */
     public static RotatingWriter open(SegmentDirectory directory, ArenaSchema schema, int maxBatches,
-                                      long epoch, int retention, RotationPolicy policy,
+                                      long epoch, Retention retention, RotationPolicy policy,
                                       Clock clock, EpochNanoClock nanoClock) {
         RotatingWriter w = new RotatingWriter(directory, schema, maxBatches, epoch, retention, policy, clock, nanoClock);
         w.currentDay = today(clock);
@@ -87,8 +102,20 @@ public final class RotatingWriter implements AutoCloseable {
         rotate(today(clock));
     }
 
-    /** Advances the current segment's liveness heartbeat. */
+    /**
+     * Advances the current segment's liveness heartbeat, rotating first if the policy has come due.
+     *
+     * <p>The rotation check matters for quiet tables: rotation is otherwise only evaluated inside
+     * {@link #append}, so a writer that is alive but idle across the day boundary would keep
+     * yesterday's segment open indefinitely. An archiver cannot roll that segment (a writer may
+     * still append to it), so yesterday's data would sit unarchived until the next row arrived.
+     * Heartbeating on a timer — which a live writer must do anyway — closes that window.
+     */
     public void heartbeat() {
+        LocalDate today = today(clock);
+        if (policy.shouldRotate(new RotationPolicy.Context(currentDay, today))) {
+            rotate(today);
+        }
         current.heartbeat();
     }
 
@@ -100,12 +127,17 @@ public final class RotatingWriter implements AutoCloseable {
         return directory.segmentPath(currentDay, currentSeq);
     }
 
+    /** Seals the trailing batch of the current segment, then releases it. */
     @Override
     public void close() {
+        current.sealFinal(); // graceful shutdown: no more rows are coming, so publish the last stats
         current.close();
     }
 
     private void rotate(LocalDate today) {
+        // Seal before closing: this segment will never be appended to again, so its last batch must
+        // carry published stats rather than looking forever like a batch still being written.
+        current.sealFinal();
         current.close(); // writer done with this segment; readers keep their own mappings
         if (today.equals(currentDay)) {
             currentSeq++;
@@ -123,10 +155,20 @@ public final class RotatingWriter implements AutoCloseable {
     }
 
     private void applyRetention() {
+        if (!retention.enabled()) {
+            return;
+        }
         List<SegmentDirectory.SegmentName> segments = directory.list();
-        int evict = segments.size() - retention;
+        int evict = segments.size() - retention.maxSegments();
         for (int i = 0; i < evict; i++) {
-            directory.unlink(segments.get(i).path()); // oldest first
+            Path victim = segments.get(i).path(); // oldest first
+            // ERROR, not DEBUG: in a deployment with an archiver this is data loss — the backstop
+            // only reaches a segment the archiver has not yet reclaimed. See Retention.
+            LOG.log(System.Logger.Level.ERROR,
+                    "retention backstop evicting segment {0} (keeping {1}); if a cold-tier roll owns "
+                            + "reclamation, this is UNARCHIVED DATA BEING DROPPED — the archiver is behind",
+                    victim, retention.maxSegments());
+            directory.unlink(victim);
         }
     }
 

@@ -182,6 +182,30 @@ final class BatchCursor {
         openBatch(batchIndex + 1);
     }
 
+    /**
+     * Seals the trailing in-progress batch without opening a successor — the close/rotate path.
+     * Without this, the last batch of every rotated-away segment keeps {@code IN_PROGRESS_BIT} set
+     * forever with unpublished (zeroed) stats: its rows stay readable, but it is invisible to
+     * zone-map pruning and indistinguishable from a batch a live writer is still filling.
+     *
+     * <p>Deliberately does nothing for an <em>empty</em> trailing batch (which exists when the last
+     * row exactly filled a batch, or after an explicit {@code seal()}): publishing a {@code [0, 0]}
+     * time range would force every reader to special-case it, and zero-row batches are already
+     * skipped by all consumers. So after this returns, the only batch that can still be in progress
+     * is one holding no rows.
+     *
+     * <p>An open (begun but not ended) row is excluded: it was never published, so the sealed row
+     * count is exactly the published prefix (invariant 1). Idempotent.
+     */
+    void sealFinal() {
+        if (batchIndex < 0 || rowIndex == 0) {
+            return;
+        }
+        sealAt(batchIndex, rowIndex);
+        rowOpen = false;
+        batchIndex = -1; // further appends are impossible; the segment is being closed
+    }
+
     private void sealAt(int batch, int rowCount) {
         catalog.setStats(batch,
                 tsSeen ? tsMin : 0, tsSeen ? tsMax : 0,

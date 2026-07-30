@@ -338,18 +338,35 @@ column to be a *timestamp* type (TIME64/DATE32 constants would compare in the wr
 
 ### 8.1 arena (Java)
 
-- **Seal the final batch on close.** `SegmentWriter.close()` seals the in-progress batch (if it
-  has rows) before unmapping; `RotatingWriter.rotate()` inherits it via `current.close()`. Today
-  the last batch of every rotated segment keeps `IN_PROGRESS_BIT` forever with unpublished stats —
-  which breaks I2's zone-map verification and blinds `arena_scan` pruning for that batch. Tests:
-  `arena_segments()` on a closed segment shows every batch sealed with published stats.
-- **Gate retention.** `RotatingWriter.applyRetention()`'s count-based unlink is the design's
-  biggest live hazard — it deletes oldest-first with no knowledge of what has been archived.
-  Change: retention **off by default**; count-based eviction becomes an explicit opt-in emergency
-  backstop that logs at ERROR when it fires. The roller is the sole normal-path unlink owner.
-- **Rotate on heartbeat.** `RotatingWriter.heartbeat()` also consults the `RotationPolicy`, so an
-  idle-but-live writer still rotates shortly after midnight and yesterday's segment freezes
-  promptly (otherwise the roller waits on heartbeat staleness for quiet tables).
+**Status: implemented (R2).** All three landed; 85 arena tests green, and the C++ reader +
+extension suites confirm the golden corpus is byte-unchanged.
+
+- **Seal the final batch when the writer is finished with a segment.** New
+  `SegmentWriter.sealFinal()`, called by `RotatingWriter` on both lifecycle exits — `rotate()` and
+  `close()`. Previously the last batch of every rotated-away segment kept `IN_PROGRESS_BIT` forever
+  with unpublished (zeroed) stats, which breaks I2's day-alignment verification and blinds
+  `arena_scan` pruning for that batch. Measured after the change: a live writer's trailing partial
+  batch now reports `sealed=true` with real stats, and a time-filtered scan prunes **7 of 31**
+  batches including the trailing one.
+
+  *Deliberately not folded into `SegmentWriter.close()`*, which was the obvious first move: a
+  segment whose last batch stays in progress forever is exactly the signature of a writer that
+  **died**, and that state must stay reachable and readable — the golden corpus pins it, and the
+  C++ conformance suite asserts on it. Putting the seal in the low-level `close()` would have
+  rewritten a cross-language contract that isn't actually changing. So `close()` stays a pure
+  resource release and the *lifecycle* owner decides when a segment is finished. An empty trailing
+  batch is left in progress either way (sealing it would publish a meaningless `[0,0]` range, and
+  zero-row batches are already skipped everywhere).
+- **Gate retention.** `RotatingWriter`'s count-based unlink was the design's biggest live hazard —
+  it deletes oldest-first knowing nothing about what has been archived. Now expressed as a
+  `Retention` value: **`Retention.none()` is the default**, and `Retention.emergencyBackstop(n)` is
+  the explicit opt-in that logs at ERROR on every eviction (in an archived deployment, it firing at
+  all means unarchived data is being dropped). The roller is the sole normal-path unlink owner.
+- **Rotate on heartbeat.** `RotatingWriter.heartbeat()` now evaluates the `RotationPolicy` first, so
+  an idle-but-live writer still rotates shortly after midnight and yesterday's segment freezes
+  promptly. Without it, rotation is only checked inside `append`, so a quiet table would pin
+  yesterday's segment open — unarchivable, because the roller must never touch a segment a live
+  writer may still append to — until the next row happened to arrive.
 
 ### 8.2 arena-duckdb (C++)
 
@@ -426,7 +443,7 @@ cost a debugging round at R1 — worth reading before changing it:
 | # | Deliverable | Exit tests |
 |---|---|---|
 | **R1** ✅ **done** | Dev stack (`dev/docker-compose.yml`, `dev/catalog-init.sh`, `dev/hist-attach.sql`) + write-path spike `dev/r1-spike.sh`: rolls a real arena segment into a V3 day-partitioned Iceberg table in one transaction with its `roll_log` row, and asserts the result | **All green** — see §10 for the answers. 2,339 rows, arena↔iceberg row parity, ns bounds exact (`…22.689010141`, 2,335 rows carrying sub-µs digits on both sides), format-version 3 + `day` transform stored, partition pruning reads 1 file. Re-runnable as a regression test |
-| **R2** | Arena hardening: seal-on-close, retention gated off + ERROR backstop, rotate-on-heartbeat | `arena_segments()` shows closed segment fully sealed; backstop-fires-ERROR test; idle-writer rotates after midnight test |
+| **R2** ✅ **done** | Arena hardening: seal-when-finished (`SegmentWriter.sealFinal()` driven by `RotatingWriter`), `Retention.none()` by default + ERROR-logging backstop, rotate-on-heartbeat | **All green** — `SealOnCloseTest` (5), `RetentionPolicyTest` (4), `IdleRotationTest` (2); 85 arena tests total. Cross-language unchanged: C++ reader 15/15 and the extension SQL suite still pass against the same golden corpus. Live-writer check: trailing partial batch now `sealed=true` with published stats, and pruning covers it (kept 7 of 31 batches) |
 | **R3** | `arena_scan(LIST)` overload | list-scan result == dir-scan filtered to those files; zone-map pruning intact per file |
 | **R4** | `:cold` core roll (single table; §4 protocol; all three recovery branches) | 2-day round-trip: row parity, sortedness, roll_log; kill -9 between data and log commits → rerun converges, zero dupes; larger-than-memory-limit day sorts via spill |
 | **R5** | Unlink + backlog + multi-table | grace-gated unlink (files gone only after grace); multi-seq day; 3-day writer-down backlog drains ascending; catalog-down retry + shm-pressure alert; ascending-abort (D−2 fails ⇒ D−1 not attempted) |
