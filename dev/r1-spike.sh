@@ -37,7 +37,13 @@ ls -1 "$ARENA_TABLE_DIR" | sed 's/^/    /'
 # The day being rolled, derived from the segment file names (<yyyyMMdd>.<seq>.arena).
 DAY_RAW="$(ls -1 "$ARENA_TABLE_DIR" | grep -oE '^[0-9]{8}' | sort -u | head -1)"
 DAY="${DAY_RAW:0:4}-${DAY_RAW:4:2}-${DAY_RAW:6:2}"
-echo "==> rolling day $DAY"
+
+# Name that day's segments explicitly, as the roller will: the set archived here is the same list
+# it would later unlink, with no directory re-listing in between (arena_scan's LIST form, R3).
+SEG_FILES="$(ls -1 "$ARENA_TABLE_DIR"/"$DAY_RAW".*.arena)"
+SEG_LIST="$(printf "'%s'," $SEG_FILES | sed 's/,$//')"
+SEG_NAMES="$(basename -a $SEG_FILES | paste -sd, -)"
+echo "==> rolling day $DAY from $(wc -l <<<"$SEG_FILES") segment(s)"
 
 cat > "$WORK/spike.sql" <<SQL
 -- Both extensions in one session: unsigned local arena + signed core iceberg (they coexist).
@@ -68,18 +74,18 @@ CREATE TABLE hist.ito_meta.roll_log_r1 (
 BEGIN;
 INSERT INTO hist.ito.quotes_r1
     SELECT sym, ts, px
-    FROM arena_scan('$ARENA_TABLE_DIR')
+    FROM arena_scan([$SEG_LIST])
     WHERE ts >= TIMESTAMP '$DAY' AND ts < TIMESTAMP '$DAY' + INTERVAL 1 DAY
     ORDER BY sym, ts;
 INSERT INTO hist.ito_meta.roll_log_r1
-    SELECT 'quotes', DATE '$DAY', count(*), '$(ls -1 "$ARENA_TABLE_DIR" | paste -sd, -)', now()
+    SELECT 'quotes', DATE '$DAY', count(*), '$SEG_NAMES', now()
     FROM hist.ito.quotes_r1;
 COMMIT;
 
 .print
 .print ================ assertions ================
 .mode line
-WITH arena AS (SELECT count(*) n, min(ts) lo, max(ts) hi FROM arena_scan('$ARENA_TABLE_DIR')),
+WITH arena AS (SELECT count(*) n, min(ts) lo, max(ts) hi FROM arena_scan([$SEG_LIST])),
      ice   AS (SELECT count(*) n, min(ts) lo, max(ts) hi FROM hist.ito.quotes_r1)
 SELECT
     (SELECT n FROM arena)                              AS arena_rows,
@@ -90,7 +96,7 @@ SELECT
      AND (SELECT hi FROM arena) = (SELECT hi FROM ice)) AS ns_bounds_exact,
     (SELECT hi::VARCHAR FROM ice)                      AS max_ts_roundtripped,
     -- ns fidelity is only *proved* if the source actually carries sub-microsecond digits.
-    (SELECT count(*) FROM arena_scan('$ARENA_TABLE_DIR')
+    (SELECT count(*) FROM arena_scan([$SEG_LIST])
        WHERE epoch_ns(ts) % 1000 <> 0)                 AS source_rows_with_sub_us,
     (SELECT count(*) FROM hist.ito.quotes_r1
        WHERE epoch_ns(ts) % 1000 <> 0)                 AS iceberg_rows_with_sub_us;

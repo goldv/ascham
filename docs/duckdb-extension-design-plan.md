@@ -242,10 +242,11 @@ JSON because DuckDB ingests it natively, making the conformance check a pure-SQL
 | **D6** | Consumption + handoff: load recipe for the Flight SQL server (LOAD + `arena_dir`, replacing `registerArrowStream` for arena tables — closes the server's pushdown gap); README; own-repo split checklist (what moves, what the conformance contract pins) | server-side smoke (JDBC connection with unsigned load executes a pruned query); docs complete |
 
 > **Addendum (2026-07-30):** [`cold-tier-design-plan.md`](cold-tier-design-plan.md) adds two items
-> to this extension's roadmap. **(R3 there)** an `arena_scan(LIST(VARCHAR))` overload — an explicit
-> list of segment files, so the EOD roller's rolled-set == unlinked-set by construction (a `day :=`
-> parameter would re-list the directory at bind time, a discover/roll/unlink TOCTOU). **(R7 there,
-> v2)** a union replacement scan: `ArenaReplacement` returns a `SubqueryRef` holding
+> to this extension's roadmap. **(R3 there — ✅ implemented)** an `arena_scan(LIST(VARCHAR))`
+> overload: `arena_scan` is now a `TableFunctionSet` of two signatures over one bind, so callers can
+> name segment files explicitly and the EOD roller's rolled-set == unlinked-set by construction (a
+> `day :=` parameter would re-list the directory at bind time, a discover/roll/unlink TOCTOU).
+> Duplicate/empty/NULL list inputs are hard errors. **(R7 there, v2)** a union replacement scan: `ArenaReplacement` returns a `SubqueryRef` holding
 > `hist WHERE ts < cutover UNION ALL arena_scan WHERE ts >= cutover` (verified: DuckDB's binder
 > wraps any returned `TableRef`, and pushdown flows through UNION ALL), with new settings
 > `arena_hist_catalog` / `arena_hist_refresh_ms` — making bare `quotes` span realtime + Iceberg

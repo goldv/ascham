@@ -1,0 +1,131 @@
+package io.ito.cold;
+
+import io.ito.arena.rotate.DailyRotationPolicy;
+import io.ito.arena.rotate.RotatingWriter;
+import io.ito.arena.rotate.SegmentDirectory;
+import io.ito.arena.schema.ArenaSchema;
+import io.ito.arena.schema.MetadataKeys;
+import io.ito.arena.write.GenericAppender;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.util.List;
+import java.util.Map;
+import java.util.function.Consumer;
+import org.agrona.concurrent.EpochNanoClock;
+import org.agrona.concurrent.UnsafeBuffer;
+import org.apache.arrow.vector.types.TimeUnit;
+import org.apache.arrow.vector.types.pojo.ArrowType;
+import org.apache.arrow.vector.types.pojo.Field;
+import org.apache.arrow.vector.types.pojo.FieldType;
+import org.apache.arrow.vector.types.pojo.Schema;
+
+/** Shared fixtures for the cold-tier tests: a quotes-shaped schema and a writer that fills days. */
+final class ColdFixtures {
+
+    static final String[] SYMBOLS = {"AAPL", "MSFT", "GOOG"};
+    private static final long NANOS_PER_DAY = 86_400L * 1_000_000_000L;
+
+    private ColdFixtures() {
+    }
+
+    /** A UTC clock the test drives, so day boundaries are deterministic. */
+    static final class MutableClock extends Clock {
+        private volatile Instant instant;
+
+        MutableClock(Instant instant) {
+            this.instant = instant;
+        }
+
+        void set(Instant instant) {
+            this.instant = instant;
+        }
+
+        @Override
+        public Instant instant() {
+            return instant;
+        }
+
+        @Override
+        public ZoneId getZone() {
+            return ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            return this;
+        }
+    }
+
+    static EpochNanoClock counterNanoClock() {
+        return new EpochNanoClock() {
+            private long t = 1;
+
+            @Override
+            public long nanoTime() {
+                return t++;
+            }
+        };
+    }
+
+    /** {@code (ts TIMESTAMP(ns,UTC), sym UTF8, px INT64)} with ts as time column, px as stats. */
+    static ArenaSchema quotesSchema(int batchRows) {
+        List<Field> fields = List.of(
+                field("ts", new ArrowType.Timestamp(TimeUnit.NANOSECOND, "UTC"), Map.of()),
+                field("sym", new ArrowType.Utf8(), Map.of(MetadataKeys.VARLEN_BYTES, "512")),
+                field("px", new ArrowType.Int(64, true), Map.of()));
+        return ArenaSchema.load(new Schema(fields, Map.of(
+                MetadataKeys.TABLE, "quotes",
+                MetadataKeys.SCHEMA_VERSION, "1",
+                MetadataKeys.TIME_COLUMN, "ts",
+                MetadataKeys.STATS_COLUMN, "px",
+                MetadataKeys.BATCH_ROWS, Integer.toString(batchRows))));
+    }
+
+    /**
+     * Writes {@code rowsPerDay} rows for each of {@code days} into {@code base/quotes}, rotating on
+     * the UTC day boundary exactly as a live writer would, and sealing every segment on close.
+     * Timestamps are spread through each day so zone maps are meaningful.
+     */
+    static void writeDays(Path base, List<LocalDate> days, int rowsPerDay) {
+        MutableClock clock = new MutableClock(days.get(0).atStartOfDay(ZoneOffset.UTC).toInstant());
+        SegmentDirectory dir = new SegmentDirectory(base, "quotes");
+        try (RotatingWriter writer = RotatingWriter.open(dir, quotesSchema(64), 4096, 1L,
+                new DailyRotationPolicy(), clock, counterNanoClock())) {
+            for (LocalDate day : days) {
+                clock.set(day.atStartOfDay(ZoneOffset.UTC).toInstant());
+                writer.heartbeat(); // rotates onto the new day (R2: rotation is checked here too)
+                long dayStart = day.atStartOfDay(ZoneOffset.UTC).toInstant().getEpochSecond() * 1_000_000_000L;
+                // Spread evenly across the day so every row stays inside it whatever rowsPerDay is —
+                // a fixed per-row step would run past midnight for large counts and (correctly) trip
+                // the roller's day-alignment check. The jitter adds sub-microsecond digits, which is
+                // what makes nanosecond fidelity actually testable.
+                long step = NANOS_PER_DAY / (rowsPerDay + 1L);
+                for (int r = 0; r < rowsPerDay; r++) {
+                    long ts = dayStart + r * step + (r % 997) + 7;
+                    writer.append(row(ts, SYMBOLS[r % SYMBOLS.length], 1_000_000L + r));
+                }
+            }
+        }
+    }
+
+    static Consumer<GenericAppender> row(long ts, String sym, long px) {
+        byte[] symBytes = sym.getBytes(StandardCharsets.UTF_8);
+        UnsafeBuffer buf = new UnsafeBuffer(symBytes);
+        return a -> {
+            a.beginRow();
+            a.setLong(0, ts);
+            a.setBytes(1, buf, 0, symBytes.length);
+            a.setLong(2, px);
+            a.endRow();
+        };
+    }
+
+    private static Field field(String name, ArrowType type, Map<String, String> metadata) {
+        return new Field(name, new FieldType(true, type, null, metadata), List.of());
+    }
+}

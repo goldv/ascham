@@ -29,7 +29,12 @@ Two table functions, both working today:
 
 - **`arena_scan(path)`** — the columnar scan. `SELECT * FROM arena_scan('…')` returns the segment's
   rows with the correct DuckDB types (the schema is decoded from the segment), including live
-  in-progress batches. Full SQL applies: projections, `WHERE`, joins, aggregations.
+  in-progress batches. Full SQL applies: projections, `WHERE`, joins, aggregations. `path` is a
+  segment file or a table directory (all its segments, oldest-first).
+- **`arena_scan([path, …])`** — the same scan over an explicit list of segments, each element
+  resolved by the same rule. Use it when the caller must know exactly which segments were read —
+  the cold-tier roll archives and then unlinks the same list, with no directory re-listing in
+  between. Duplicate entries, empty lists, and NULLs are rejected rather than silently tolerated.
 - **`arena_segments(path)`** — the batch-catalog diagnostic: one row per (segment, batch) with row
   counts, sealed flag, catalog zone-map stats, seal time, and the live heartbeat.
 

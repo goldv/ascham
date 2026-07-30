@@ -16,6 +16,7 @@
 #include "duckdb/planner/table_filter_state.hpp"
 #include "duckdb/storage/table/column_segment.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
@@ -46,6 +47,56 @@ std::vector<std::string> ResolveSegmentPaths(const std::string &path) {
         return paths;
     }
     return {path};
+}
+
+// Resolves the function's argument to the ordered set of segment files to scan.
+//
+// VARCHAR      — one segment file, or a table directory (all its segments, oldest-first).
+// LIST(VARCHAR)— each element resolved by the same rule and concatenated, so an explicit list of
+//                files scans exactly those files, in that order.
+//
+// The list form exists for the cold-tier roll (docs/cold-tier-design-plan.md §8.2): the roller must
+// later unlink exactly the segments it archived. Naming the files means the rolled set and the
+// unlinked set are the same list by construction, with no re-listing of the directory in between —
+// a directory scan would reopen the discover/roll/unlink window a concurrent rotation can slip
+// through. Duplicates are rejected rather than deduplicated: silently scanning a file twice would
+// double-count its rows into the historical store, and quietly dropping a repeat would hide a
+// caller bug just as effectively.
+std::vector<std::string> ResolveSegmentPaths(const Value &arg) {
+    if (arg.IsNull()) {
+        throw InvalidInputException("arena_scan: path argument must not be NULL");
+    }
+    if (arg.type().id() != LogicalTypeId::LIST) {
+        return ResolveSegmentPaths(arg.GetValue<std::string>());
+    }
+    auto &children = ListValue::GetChildren(arg);
+    if (children.empty()) {
+        throw InvalidInputException("arena_scan: path list is empty");
+    }
+    std::vector<std::string> paths;
+    for (auto &child : children) {
+        if (child.IsNull()) {
+            throw InvalidInputException("arena_scan: path list contains a NULL entry");
+        }
+        for (auto &resolved : ResolveSegmentPaths(child.GetValue<std::string>())) {
+            if (std::find(paths.begin(), paths.end(), resolved) != paths.end()) {
+                throw InvalidInputException("arena_scan: duplicate segment in path list: " + resolved);
+            }
+            paths.push_back(resolved);
+        }
+    }
+    return paths;
+}
+
+// How the argument should read back in an error message.
+std::string DescribeArgument(const Value &arg) {
+    if (arg.IsNull()) {
+        return "NULL";
+    }
+    if (arg.type().id() != LogicalTypeId::LIST) {
+        return "'" + arg.GetValue<std::string>() + "'";
+    }
+    return "the given path list (" + std::to_string(ListValue::GetChildren(arg).size()) + " entries)";
 }
 
 LogicalType MapType(const arena::ColumnType &c) {
@@ -102,14 +153,17 @@ int find_column(const arena::TableSchema &s, const std::string &name) {
 
 unique_ptr<FunctionData> ArenaScanBind(ClientContext &, TableFunctionBindInput &input,
                                        vector<LogicalType> &return_types, vector<string> &names) {
-    auto path = input.inputs[0].GetValue<string>();
+    const Value &arg = input.inputs[0];
+    // Resolved outside the try: these throw DuckDB exceptions that are already user-facing, and
+    // re-wrapping one in the catch below would serialize it into the message as JSON.
+    std::vector<std::string> segment_paths = ResolveSegmentPaths(arg);
     auto bind = make_uniq<ArenaScanBindData>();
     try {
-        for (auto &seg : ResolveSegmentPaths(path)) {
+        for (auto &seg : segment_paths) {
             bind->readers.push_back(arena::SegmentReader::open(seg));
         }
         if (bind->readers.empty()) {
-            throw arena::FormatError("no segments found at '" + path + "'");
+            throw arena::FormatError("no segments found at " + DescribeArgument(arg));
         }
         auto [schema_ptr, schema_len] = bind->readers[0].embedded_schema();
         bind->schema = arena::TableSchema::decode(schema_ptr, static_cast<std::size_t>(schema_len));
@@ -382,11 +436,19 @@ void ArenaScanFunc(ClientContext &context, TableFunctionInput &input, DataChunk 
 }  // namespace
 
 void RegisterArenaScan(ExtensionLoader &loader) {
-    TableFunction scan("arena_scan", {LogicalType::VARCHAR}, ArenaScanFunc, ArenaScanBind,
-                       ArenaScanInitGlobal, ArenaScanInitLocal);
-    scan.projection_pushdown = true;
-    scan.filter_pushdown = true;
-    loader.RegisterFunction(scan);
+    // Two signatures over one implementation: arena_scan(path) and arena_scan([path, ...]).
+    // Bind resolves either argument shape to the same segment list (see ResolveSegmentPaths).
+    auto make = [](const LogicalType &arg) {
+        TableFunction scan("arena_scan", {arg}, ArenaScanFunc, ArenaScanBind,
+                           ArenaScanInitGlobal, ArenaScanInitLocal);
+        scan.projection_pushdown = true;
+        scan.filter_pushdown = true;
+        return scan;
+    };
+    TableFunctionSet set("arena_scan");
+    set.AddFunction(make(LogicalType(LogicalType::VARCHAR)));
+    set.AddFunction(make(LogicalType::LIST(LogicalType(LogicalType::VARCHAR))));
+    loader.RegisterFunction(set);
 }
 
 }  // namespace duckdb

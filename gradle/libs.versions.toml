@@ -11,6 +11,9 @@ jmh = "1.37"
 jmh-plugin = "0.7.3"
 jcstress = "0.16"
 jcstress-plugin = "0.9.0"
+# duckdb_jdbc: the cold tier's roll engine. Must match the DuckDB the arena extension is built
+# against (v1.5.5) — a loadable extension is rejected by a host of a different version.
+duckdb = "1.5.5.0"
 
 [libraries]
 agrona = { module = "org.agrona:agrona", version.ref = "agrona" }
@@ -26,6 +29,7 @@ jmh-core = { module = "org.openjdk.jmh:jmh-core", version.ref = "jmh" }
 jmh-annprocess = { module = "org.openjdk.jmh:jmh-generator-annprocess", version.ref = "jmh" }
 
 jcstress-core = { module = "org.openjdk.jcstress:jcstress-core", version.ref = "jcstress" }
+duckdb-jdbc = { module = "org.duckdb:duckdb_jdbc", version.ref = "duckdb" }
 
 [plugins]
 jmh = { id = "me.champeau.jmh", version.ref = "jmh-plugin" }

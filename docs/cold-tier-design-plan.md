@@ -370,12 +370,22 @@ extension suites confirm the golden corpus is byte-unchanged.
 
 ### 8.2 arena-duckdb (C++)
 
-- **`arena_scan(LIST(VARCHAR))` overload** (~30 lines in `arena_scan.cpp`): a second registered
-  signature taking `LogicalType::LIST(LogicalType::VARCHAR)`; bind iterates the list values
-  instead of `ResolveSegmentPaths`. Why a LIST rather than a `day :=` named parameter: the roller
-  must unlink **exactly the files it rolled**; a day filter re-lists the directory at bind time,
-  opening a discover/roll/unlink TOCTOU seam, whereas an explicit list makes
-  rolled-set == logged-set == unlinked-set by construction. (Also generically useful.)
+**Status: implemented (R3).**
+
+- **`arena_scan(LIST(VARCHAR))` overload.** `arena_scan` is now a `TableFunctionSet` with two
+  signatures — `arena_scan(VARCHAR)` and `arena_scan(LIST(VARCHAR))` — sharing one bind. Each list
+  element resolves by the same rule as the scalar form (a segment file, or a directory expanded
+  oldest-first), so naming files scans exactly those files in that order, with projection pushdown
+  and zone-map pruning unchanged. Why a LIST rather than a `day :=` named parameter: the roller must
+  unlink **exactly the files it rolled**; a day filter re-lists the directory at bind time, opening
+  a discover/roll/unlink TOCTOU seam, whereas an explicit list makes
+  rolled-set == logged-set == unlinked-set by construction.
+
+  **Duplicates are rejected, not deduplicated** — scanning a file twice would silently double-count
+  its rows into the historical store, and quietly dropping the repeat would hide the caller's bug
+  just as effectively. Empty lists, NULL entries, and a NULL argument are hard errors too.
+  `dev/r1-spike.sh` now rolls through the list form, including a multi-seq day (2 segments → 3,114
+  rows, both file names recorded in `roll_log.segments`).
 - **(v2, option B only)** the union replacement scan of §6B, with `arena_hist_catalog` /
   `arena_hist_refresh_ms` settings and the cached cutover lookup.
 
@@ -390,11 +400,26 @@ extension suites confirm the golden corpus is byte-unchanged.
 
 ### 8.4 `:cold` (new Gradle module)
 
-`io.ito.cold`: `RollService` (scheduling/retry), `TableRoller` (the §4 protocol), `RollExecutor`
-(interface; DuckDB-JDBC impl), `CutoverQueries` (the `roll_log` SQL, shared with the Flight
-server), `ColdConfig` (arena base dir, catalog endpoint/credentials, per-table sort columns,
-`roll.time`, grace, backstop retention). Uses arena's Java classes (`SegmentDirectory`,
-`SnapshotReader` for I2 verification), so it carries the same `--add-opens` JVM flags.
+**Status: core implemented (R4);** scheduling and reclamation land in R5. As built, `io.ito.cold`:
+
+| Class | Role |
+|---|---|
+| `TableRoller` | The §4 protocol — discover, freeze-check, verify, roll ascending, recover. Owns I1 and drives I2 |
+| `ArenaInventory` | Arena-side reads: pending days, the freeze check, I2 day-alignment verification. Never deletes |
+| `RollExecutor` / `DuckDbRollExecutor` | The historical store, behind an interface so the engine stays swappable (§5) |
+| `TypeMapping` | Arena → Iceberg types (§7): the DDL column list and the matching SELECT with widening casts |
+| `ColdConfig` | Arena base dir, catalog coordinates, per-table sort columns, memory limit / temp dir, liveness probe |
+
+Only new dependency: `org.duckdb:duckdb_jdbc` (`:cold` also depends on `:arena` for
+`SegmentDirectory`/`SnapshotReader`, so it carries the same `--add-opens` JVM flags). Still to come
+in R5: `RollService` (scheduling/retry), unlinking, and the backlog/multi-table paths.
+
+**One implementation note that changed the design's shape.** The heartbeat is a *counter*, not a
+timestamp, so a single read cannot distinguish a dead writer from a quiet one — liveness needs two
+samples separated in time. `ArenaInventory.isFrozen` therefore treats segment *ordering* as the
+primary signal (a newer segment exists ⇒ this day is finished, decided with no waiting at all) and
+only falls back to a timed heartbeat probe for the case where a past day still owns the newest
+segment, which after R2's rotate-on-heartbeat means the writer probably died.
 
 ## 9. Local dev stack
 
@@ -444,8 +469,8 @@ cost a debugging round at R1 — worth reading before changing it:
 |---|---|---|
 | **R1** ✅ **done** | Dev stack (`dev/docker-compose.yml`, `dev/catalog-init.sh`, `dev/hist-attach.sql`) + write-path spike `dev/r1-spike.sh`: rolls a real arena segment into a V3 day-partitioned Iceberg table in one transaction with its `roll_log` row, and asserts the result | **All green** — see §10 for the answers. 2,339 rows, arena↔iceberg row parity, ns bounds exact (`…22.689010141`, 2,335 rows carrying sub-µs digits on both sides), format-version 3 + `day` transform stored, partition pruning reads 1 file. Re-runnable as a regression test |
 | **R2** ✅ **done** | Arena hardening: seal-when-finished (`SegmentWriter.sealFinal()` driven by `RotatingWriter`), `Retention.none()` by default + ERROR-logging backstop, rotate-on-heartbeat | **All green** — `SealOnCloseTest` (5), `RetentionPolicyTest` (4), `IdleRotationTest` (2); 85 arena tests total. Cross-language unchanged: C++ reader 15/15 and the extension SQL suite still pass against the same golden corpus. Live-writer check: trailing partial batch now `sealed=true` with published stats, and pruning covers it (kept 7 of 31 batches) |
-| **R3** | `arena_scan(LIST)` overload | list-scan result == dir-scan filtered to those files; zone-map pruning intact per file |
-| **R4** | `:cold` core roll (single table; §4 protocol; all three recovery branches) | 2-day round-trip: row parity, sortedness, roll_log; kill -9 between data and log commits → rerun converges, zero dupes; larger-than-memory-limit day sorts via spill |
+| **R3** ✅ **done** | `arena_scan(LIST)` overload (`TableFunctionSet`, two signatures, one bind) | **All green** — 10 new assertions in `scripts/test_extension.sh` (31 total): list == dir scan when it names every segment, single element, pushdown and zone-map pruning intact through the list, directory element expands, and duplicate / empty-list / NULL-entry / NULL-argument all rejected with clear errors |
+| **R4** ✅ **done** | `:cold` module: `TableRoller` (§4 protocol, all three recovery branches), `ArenaInventory` (discovery, freeze check, I2 verification), `DuckDbRollExecutor`, `TypeMapping`, `ColdConfig` | **All green** — 16 unit tests + 8 catalog integration tests (`./gradlew :cold:rollIT`): 2-day round-trip with row parity, per-partition (sym, ts) sortedness, watermark and `roll_log.segments` audit; ns fidelity preserved; re-run is a no-op with zero duplicates; **data-committed-but-unlogged repairs the log instead of re-copying**; a live writer's day is left alone; a misaligned day aborts whole; a 150k-row day sorts by spilling under a 256 MB limit |
 | **R5** | Unlink + backlog + multi-table | grace-gated unlink (files gone only after grace); multi-seq day; 3-day writer-down backlog drains ascending; catalog-down retry + shm-pressure alert; ascending-abort (D−2 fails ⇒ D−1 not attempted) |
 | **R6** | Unified surface v1: Flight-server views (A) + CutoverTracker; explicit-path docs (C) | continuous union query across a live roll: no dupes/no gaps at every transition; `EXPLAIN ANALYZE` shows arena pruning of rolled-not-unlinked segments; TTL ≪ grace asserted in config validation |
 | **R7** (v2, optional) | Extension union replacement scan (B) | bare `quotes` in a plain DuckDB CLI session (LOAD arena + ATTACH) resolves to the union; the R6 mid-roll test passes from the CLI |

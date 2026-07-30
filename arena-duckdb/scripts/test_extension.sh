@@ -78,6 +78,34 @@ check "parallel: 3 segments = 18 rows" \
 check "zone-map: result stays exact under pruning" \
     "SELECT count(*)::BIGINT AS r FROM arena_scan('$SEGDIR') WHERE i64 > 3500000" "6"
 
+# --- R3: arena_scan(LIST(VARCHAR)) — name the segments explicitly, no directory listing.
+# The cold-tier roller uses this so the set it archives is the same list it later unlinks
+# (docs/cold-tier-design-plan.md §8.2).
+check "list: scans exactly the named segments" \
+    "SELECT count(*)::BIGINT AS r FROM arena_scan(['$SEGDIR/20260101.0.arena','$SEGDIR/20260101.1.arena'])" "12"
+check "list: single element" \
+    "SELECT count(*)::BIGINT AS r FROM arena_scan(['$SEGDIR/20260101.0.arena'])" "6"
+check "list: equals the dir scan when it names every segment" \
+    "SELECT (SELECT count(*) FROM arena_scan(['$SEGDIR/20260101.0.arena','$SEGDIR/20260101.1.arena','$SEGDIR/20260101.2.arena']))
+          = (SELECT count(*) FROM arena_scan('$SEGDIR')) AS r" "true"
+check "list: pushdown still applies" \
+    "SELECT count(*)::BIGINT AS r FROM arena_scan(['$SEGDIR/20260101.0.arena','$SEGDIR/20260101.1.arena']) WHERE i8 >= 4" "4"
+check "list: zone-map pruning still applies" \
+    "SELECT count(*)::BIGINT AS r FROM arena_scan(['$SEGDIR/20260101.0.arena','$SEGDIR/20260101.1.arena']) WHERE i64 > 3500000" "4"
+# Duplicates are rejected, not deduplicated: silently scanning a file twice would double-count its
+# rows into the historical store.
+check "list: duplicate entry is rejected" \
+    "SELECT count(*) FROM arena_scan(['$SEGDIR/20260101.0.arena','$SEGDIR/20260101.0.arena'])" \
+    "duplicate segment in path list"
+check "list: empty list is rejected" \
+    "SELECT count(*) FROM arena_scan([]::VARCHAR[])" "path list is empty"
+check "list: NULL entry is rejected" \
+    "SELECT count(*) FROM arena_scan(['$SEGDIR/20260101.0.arena',NULL])" "path list contains a NULL entry"
+check "list: NULL argument is rejected" \
+    "SELECT count(*) FROM arena_scan(NULL::VARCHAR[])" "path argument must not be NULL"
+check "list: a directory element expands, like the scalar form" \
+    "SELECT count(*)::BIGINT AS r FROM arena_scan(['$SEGDIR'])" "18"
+
 zout=$(ARENA_SCAN_DEBUG=1 DUCKDB="$DUCKDB" "$HERE/scripts/run_duckdb.sh" "LOAD '$EXT'" \
     "SELECT count(*) FROM arena_scan('$SEGDIR') WHERE i64 > 3500000" 2>&1)
 if grep -qF "kept 3 of 6" <<<"$zout"; then
