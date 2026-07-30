@@ -2,6 +2,7 @@ package io.ito.cold;
 
 import io.ito.arena.schema.ArenaSchema;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
@@ -48,6 +49,19 @@ public interface RollExecutor extends AutoCloseable {
     /** Records a day in the roll log without copying data — recovery only, when the data is already
      *  committed but the log entry was lost. */
     void logDayOnly(String table, LocalDate day, long rows, List<String> segmentNames);
+
+    /**
+     * Days whose archive commit is older than {@code grace}, with the segment file names each was
+     * built from — the only segments that may be reclaimed, and the exact set (invariant I3).
+     *
+     * <p>Age is evaluated against the store's own clock, so a skewed roller clock can never make a
+     * just-committed day look reclaimable.
+     */
+    List<ReclaimableDay> reclaimable(String table, Duration grace);
+
+    /** A rolled day that is now old enough to have its arena segments released. */
+    record ReclaimableDay(LocalDate day, List<String> segmentNames) {
+    }
 
     @Override
     void close();

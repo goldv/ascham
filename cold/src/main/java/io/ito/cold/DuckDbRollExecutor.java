@@ -162,6 +162,29 @@ public final class DuckDbRollExecutor implements RollExecutor {
     }
 
     @Override
+    public List<ReclaimableDay> reclaimable(String table, java.time.Duration grace) {
+        // Age is computed in SQL against the store's own now(), so the roller's local clock — which
+        // may be skewed from the catalog's — cannot shorten the grace window.
+        String sql = "SELECT day, segments FROM " + config.qualifiedRollLog()
+                + " WHERE table_name = " + literal(table)
+                + " AND committed_at <= now() - INTERVAL " + grace.toSeconds() + " SECOND"
+                + " ORDER BY day";
+        List<ReclaimableDay> out = new java.util.ArrayList<>();
+        try (Statement st = connection.createStatement(); ResultSet rs = st.executeQuery(sql)) {
+            while (rs.next()) {
+                String segments = rs.getString(2);
+                List<String> names = segments == null || segments.isBlank()
+                        ? List.of()
+                        : List.of(segments.split(","));
+                out.add(new ReclaimableDay(rs.getDate(1).toLocalDate(), names));
+            }
+        } catch (SQLException e) {
+            throw new ColdException("failed to list reclaimable days for " + table, e);
+        }
+        return out;
+    }
+
+    @Override
     public void logDayOnly(String table, LocalDate day, long rows, List<String> segmentNames) {
         exec("INSERT INTO " + config.qualifiedRollLog() + " VALUES (" + literal(table)
                 + ", DATE " + literal(day.toString()) + ", " + rows + ", "

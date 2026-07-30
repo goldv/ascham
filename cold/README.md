@@ -8,15 +8,17 @@ One embedded DuckDB does the whole move: it reads the arena through the native `
 (zero-copy over the mmap), sorts the day by `(sym, ts)`, encodes Parquet, and commits the Iceberg
 snapshot. Java only orchestrates — discovery, safety checks, ordering, recovery.
 
-## Status (R4)
+## Status (R4–R5)
 
 | Piece | State |
 |---|---|
 | `TableRoller` — the roll protocol: discover → freeze check → verify → roll ascending | **Implemented & tested** |
 | `ArenaInventory` — pending days, the freeze check, I2 day-alignment verification | **Implemented & tested** |
+| `SegmentReclaimer` — grace-gated unlink; the only thing that deletes arena data | **Implemented & tested** |
+| `RollService` / `RollScheduler` — multi-table passes, pressure alert, scheduling + backoff | **Implemented & tested** |
 | `DuckDbRollExecutor` — DDL, the atomic data+watermark commit, recovery queries | **Implemented & tested** |
 | `TypeMapping` — arena → Iceberg types, with the widening casts | **Implemented & tested** |
-| Segment unlinking, backlog handling, multi-table, scheduling | Not started (R5) |
+| Unified realtime + historical query surface | Not started (R6) |
 
 ## The protocol in one paragraph
 
@@ -54,6 +56,33 @@ try (RollExecutor executor = new DuckDbRollExecutor(config)) {
 
 `TableRoller.cutoverDay(table)` returns the boundary the unified query surface splits on: historical
 data covers everything before it, the arena serves everything from it onward.
+
+For a whole deployment, `RollService` does every table in one pass and `RollScheduler` runs it:
+
+```java
+RollService service = new RollService(config, executor, Duration.ofMinutes(15), 8L << 30);
+try (RollScheduler scheduler = new RollScheduler(service, LocalTime.of(0, 15), Clock.systemUTC())) {
+    scheduler.start();   // drains any backlog now, then runs daily at 00:15 UTC
+}
+```
+
+## Reclamation
+
+Segments are released only after their rows are durably in the historical store, and only via
+`SegmentReclaimer`. Three rules make that safe:
+
+- **Only what the roll log names** — a segment is reclaimed because a committed archive row says it
+  was copied, never because it merely looks old. This is why the roll names its inputs explicitly
+  (`arena_scan([...])`) rather than re-listing the directory: the audit set and the reclaim set are
+  the same list.
+- **Only after grace** (default 15 min), measured against **the store's clock**, so a skewed roller
+  clock cannot shorten its own safety margin. Grace must comfortably exceed readers' cutover-cache
+  TTL, or a query could look for rows in an arena segment that just disappeared.
+- **Never the newest segment**, which a live writer may be appending to.
+
+Unlinking does not disturb in-flight readers: the kernel keeps an unlinked inode alive until the
+last mapping is dropped, so a query that opened before the unlink runs to completion. It only stops
+*new* readers.
 
 ## Tests
 

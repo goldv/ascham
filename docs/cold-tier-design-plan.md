@@ -400,19 +400,35 @@ extension suites confirm the golden corpus is byte-unchanged.
 
 ### 8.4 `:cold` (new Gradle module)
 
-**Status: core implemented (R4);** scheduling and reclamation land in R5. As built, `io.ito.cold`:
+**Status: implemented (R4 core, R5 reclamation + orchestration).** As built, `io.ito.cold`:
 
 | Class | Role |
 |---|---|
 | `TableRoller` | The §4 protocol — discover, freeze-check, verify, roll ascending, recover. Owns I1 and drives I2 |
 | `ArenaInventory` | Arena-side reads: pending days, the freeze check, I2 day-alignment verification. Never deletes |
+| `SegmentReclaimer` | The only component that deletes arena data. Owns I3: roll-log-named segments only, past grace, never the newest |
+| `RollService` | One pass over every table — roll then reclaim — plus the arena-pressure alert. Tables are isolated from each other's failures |
+| `RollScheduler` | Startup drain, daily cadence, exponential backoff while anything still fails |
 | `RollExecutor` / `DuckDbRollExecutor` | The historical store, behind an interface so the engine stays swappable (§5) |
 | `TypeMapping` | Arena → Iceberg types (§7): the DDL column list and the matching SELECT with widening casts |
 | `ColdConfig` | Arena base dir, catalog coordinates, per-table sort columns, memory limit / temp dir, liveness probe |
 
 Only new dependency: `org.duckdb:duckdb_jdbc` (`:cold` also depends on `:arena` for
-`SegmentDirectory`/`SnapshotReader`, so it carries the same `--add-opens` JVM flags). Still to come
-in R5: `RollService` (scheduling/retry), unlinking, and the backlog/multi-table paths.
+`SegmentDirectory`/`SnapshotReader`, so it carries the same `--add-opens` JVM flags).
+
+**Two implementation notes that changed the design's shape.**
+
+The heartbeat is a *counter*, not a timestamp, so a single read cannot distinguish a dead writer
+from a quiet one — liveness needs two samples separated in time. `ArenaInventory.isFrozen`
+therefore treats segment *ordering* as the primary signal (a newer segment exists ⇒ this day is
+finished, decided with no waiting at all) and only falls back to a timed heartbeat probe for the
+case where a past day still owns the newest segment, which after R2's rotate-on-heartbeat means the
+writer probably died.
+
+The grace window is evaluated **in the store**, as `committed_at <= now() - INTERVAL n SECOND`
+against the catalog's own clock, rather than by comparing a fetched timestamp locally. A roller
+whose clock runs fast would otherwise shorten its own safety margin and could unlink a day that
+readers are still serving from the arena — the one failure mode grace exists to prevent.
 
 **One implementation note that changed the design's shape.** The heartbeat is a *counter*, not a
 timestamp, so a single read cannot distinguish a dead writer from a quiet one — liveness needs two
@@ -471,7 +487,7 @@ cost a debugging round at R1 — worth reading before changing it:
 | **R2** ✅ **done** | Arena hardening: seal-when-finished (`SegmentWriter.sealFinal()` driven by `RotatingWriter`), `Retention.none()` by default + ERROR-logging backstop, rotate-on-heartbeat | **All green** — `SealOnCloseTest` (5), `RetentionPolicyTest` (4), `IdleRotationTest` (2); 85 arena tests total. Cross-language unchanged: C++ reader 15/15 and the extension SQL suite still pass against the same golden corpus. Live-writer check: trailing partial batch now `sealed=true` with published stats, and pruning covers it (kept 7 of 31 batches) |
 | **R3** ✅ **done** | `arena_scan(LIST)` overload (`TableFunctionSet`, two signatures, one bind) | **All green** — 10 new assertions in `scripts/test_extension.sh` (31 total): list == dir scan when it names every segment, single element, pushdown and zone-map pruning intact through the list, directory element expands, and duplicate / empty-list / NULL-entry / NULL-argument all rejected with clear errors |
 | **R4** ✅ **done** | `:cold` module: `TableRoller` (§4 protocol, all three recovery branches), `ArenaInventory` (discovery, freeze check, I2 verification), `DuckDbRollExecutor`, `TypeMapping`, `ColdConfig` | **All green** — 16 unit tests + 8 catalog integration tests (`./gradlew :cold:rollIT`): 2-day round-trip with row parity, per-partition (sym, ts) sortedness, watermark and `roll_log.segments` audit; ns fidelity preserved; re-run is a no-op with zero duplicates; **data-committed-but-unlogged repairs the log instead of re-copying**; a live writer's day is left alone; a misaligned day aborts whole; a 150k-row day sorts by spilling under a 256 MB limit |
-| **R5** | Unlink + backlog + multi-table | grace-gated unlink (files gone only after grace); multi-seq day; 3-day writer-down backlog drains ascending; catalog-down retry + shm-pressure alert; ascending-abort (D−2 fails ⇒ D−1 not attempted) |
+| **R5** ✅ **done** | `SegmentReclaimer` (grace-gated unlink), `RollService` (multi-table pass + shm-pressure alert), `RollScheduler` (startup drain, daily cadence, backoff retry) | **All green** — 35 cold unit tests + 13 catalog integration tests. Grace-gated unlink verified against the **store's** clock, not the roller's; reclaims only roll-log-named segments; never the newest; rejects path traversal; idempotent; a reader mapped pre-unlink keeps reading. Backlog: 3 writer-down days drain ascending in one pass. Ascending-abort: D−2 fails ⇒ D−3 never attempted, watermark stays at D−1. Multi-table: independent watermarks, one bad table does not block the others |
 | **R6** | Unified surface v1: Flight-server views (A) + CutoverTracker; explicit-path docs (C) | continuous union query across a live roll: no dupes/no gaps at every transition; `EXPLAIN ANALYZE` shows arena pruning of rolled-not-unlinked segments; TTL ≪ grace asserted in config validation |
 | **R7** (v2, optional) | Extension union replacement scan (B) | bare `quotes` in a plain DuckDB CLI session (LOAD arena + ATTACH) resolves to the union; the R6 mid-roll test passes from the CLI |
 
