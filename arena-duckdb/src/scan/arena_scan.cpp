@@ -189,6 +189,25 @@ unique_ptr<FunctionData> ArenaScanBind(ClientContext &, TableFunctionBindInput &
     return std::move(bind);
 }
 
+// Row count of everything this scan can return, which the catalog snapshot already knows exactly —
+// no sampling, no guessing. Reported before zone-map pruning and filters, which is what the planner
+// wants: it applies its own selectivity on top.
+//
+// Supplying this is not a nicety. Without a cardinality callback DuckDB falls back to
+// `LogicalGet::EstimateCardinality`, which returns **1** for a table function, and a supposed
+// one-row input poisons every plan built on it. The visible symptom was an `ASOF JOIN` between two
+// arena tables running as a NESTED_LOOP_JOIN — DuckDB switches to a loop join when the probe side is
+// smaller than `asof_loop_join_threshold` (64), which "1" always is — turning a 105k × 1M join into
+// ~10^11 comparisons.
+unique_ptr<NodeStatistics> ArenaScanCardinality(ClientContext &, const FunctionData *bind_data) {
+    auto &bind = bind_data->Cast<ArenaScanBindData>();
+    idx_t rows = 0;
+    for (auto &w : bind.work) {
+        rows += static_cast<idx_t>(w.rows);
+    }
+    return make_uniq<NodeStatistics>(rows, rows); // exact, so estimate == max
+}
+
 // --- Filter pushdown: extract an inclusive [lo, hi] on a zone-map column from a table filter. ---
 
 struct Range {
@@ -443,6 +462,7 @@ void RegisterArenaScan(ExtensionLoader &loader) {
                            ArenaScanInitGlobal, ArenaScanInitLocal);
         scan.projection_pushdown = true;
         scan.filter_pushdown = true;
+        scan.cardinality = ArenaScanCardinality;
         return scan;
     };
     TableFunctionSet set("arena_scan");

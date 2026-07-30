@@ -18,6 +18,7 @@ is what makes the planned move to its own repository a directory copy.
 | **Reader core** (`src/format/`) — mmap, header + schema-hash verify, layout decode, catalog snapshot (acquire loads), physical value accessors, segment discovery, **schema decode** (nanoarrow IPC → logical types + `arena.*` metadata) | **Implemented & tested** (15 conformance tests green against `conformance/golden/*.bin`) |
 | **`arena_scan(path)`** (`src/scan/`) — columnar table function: dynamic schema from the decoded logical types, all 13 v1 types (incl. ns timestamps, `DECIMAL(p,s)`, unsigned ints, varlen), null validity, and live in-progress batches | **Implemented & tested** (21 SQL tests green via `scripts/test_extension.sh`) |
 | **D4 — pushdown + parallelism:** projection pushdown, filter pushdown (row-exact via DuckDB's own applicator) with **zone-map batch pruning** on the catalog `time`/`stats` min-max, and a parallel per-(segment,batch) work list | **Implemented & tested** |
+| **Cardinality reporting** — the scan tells the planner its exact row count (the catalog snapshot already knows it) | **Implemented & tested** |
 | `arena_segments(path)` — batch-catalog diagnostic table function | **Implemented & tested** |
 | **D5 — replacement scan + `arena_dir` setting:** `SELECT * FROM <table>` resolves to `arena_scan('<arena_dir>/<table>')` when that table dir holds segments (pushdown flows through), with `arena_dir` defaulting from `$ARENA_DIR`; plus live-writer integration (`scripts/live_demo.sh`) — a Java writer appends while DuckDB queries the growing, in-progress data | **Implemented & tested** |
 | Zero-copy vector wrapping (`FlatVector::SetData` over the mmap) | Not started — `arena_scan` fills by copy per chunk (correct; a perf optimization remains) |
@@ -74,6 +75,27 @@ DUCKDB=/path/to/duckdb ARENA_DIR=/dev/shm/ito ./scripts/run_duckdb.sh \
     "LOAD '$(pwd)/build/arena.duckdb_extension'" \
     "SELECT sym, count(*), max(px) FROM quotes GROUP BY sym"
 ```
+
+### A table function must report its cardinality
+
+`arena_scan` implements DuckDB's `cardinality` callback, returning the exact row count the catalog
+snapshot already knows. This is not an optimization detail — it is required for the planner to
+produce sane plans at all.
+
+Without it, DuckDB falls back to `LogicalGet::EstimateCardinality`, which returns **1** for a table
+function. Every plan is then built believing an arena table holds a single row. The symptom that
+exposed it: an `ASOF JOIN` between two arena tables ran as a `NESTED_LOOP_JOIN`, because DuckDB
+switches to a loop join when the probe side is smaller than `asof_loop_join_threshold` (64) — and
+"1" always is. Over 105k trades × 1M quotes that is ~10^11 comparisons:
+
+| | before | after |
+|---|---|---|
+| wall clock | 52.4 s | **0.073 s** |
+| CPU time | 1,593 s | 0.8 s |
+| plan | `NESTED_LOOP_JOIN` | `ASOF_JOIN` |
+
+The same wrong estimate silently degrades join ordering and build/probe-side choice for any query
+mixing arena tables with other sources, so this matters well beyond ASOF.
 
 ### Environment / build model (important)
 

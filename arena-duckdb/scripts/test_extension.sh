@@ -106,6 +106,20 @@ check "list: NULL argument is rejected" \
 check "list: a directory element expands, like the scalar form" \
     "SELECT count(*)::BIGINT AS r FROM arena_scan(['$SEGDIR'])" "18"
 
+# --- Cardinality: the planner must be told how many rows a scan returns.
+# Without a cardinality callback DuckDB assumes a table function returns ONE row
+# (LogicalGet::EstimateCardinality returns 1), which silently wrecks any plan built on it — an
+# ASOF JOIN between two arena tables degraded to a NESTED_LOOP_JOIN because DuckDB switches to a
+# loop join when the probe side is under asof_loop_join_threshold (64), and "1" always is. On
+# 105k x 1M rows that was 52s instead of 0.07s.
+card=$(DUCKDB="$DUCKDB" "$HERE/scripts/run_duckdb.sh" "LOAD '$EXT'" \
+    "EXPLAIN SELECT * FROM arena_scan('$SEGDIR')" 2>&1 | grep -oE '~[0-9]+ rows' | head -1)
+if [[ "$card" == "~18 rows" ]]; then
+    echo "  [PASS] cardinality reported to the planner (18 rows, not the default 1)"
+else
+    echo "  [FAIL] cardinality estimate (got '$card', expected '~18 rows')"; fail=1
+fi
+
 zout=$(ARENA_SCAN_DEBUG=1 DUCKDB="$DUCKDB" "$HERE/scripts/run_duckdb.sh" "LOAD '$EXT'" \
     "SELECT count(*) FROM arena_scan('$SEGDIR') WHERE i64 > 3500000" 2>&1)
 if grep -qF "kept 3 of 6" <<<"$zout"; then
