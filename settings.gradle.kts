@@ -13,3 +13,5 @@ include("arena")
 include("arena-jcstress")
 // The cold tier: rolls completed days out of the arena into Iceberg/Parquet (docs/cold-tier-design-plan.md).
 include("cold")
+// Mock market-data writer and demo drivers (docs/flight-sql-design-plan.md §7).
+include("demo")

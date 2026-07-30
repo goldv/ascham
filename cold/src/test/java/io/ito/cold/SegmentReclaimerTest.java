@@ -137,6 +137,24 @@ class SegmentReclaimerTest {
     }
 
     @Test
+    void aLogEntryFromADifferentArenaIsRefused() {
+        // Segment file names are only unique within one arena: two arenas rolling into the same
+        // catalog table both produce a "20260727.0.arena". Without checking which arena a log entry
+        // came from, one deployment would silently delete the other's un-archived days — found by
+        // running the demo twice from different directories against one catalog.
+        ColdFixtures.writeDays(base, List.of(D1, D2), 10);
+        FakeRollExecutor executor = new FakeRollExecutor();
+        executor.arenaDir = "/somewhere/else/quotes";
+        executor.logDayOnly("quotes", D1, 10, List.of("20260727.0.arena"));
+        executor.nowMillis += GRACE.toMillis();
+
+        SegmentReclaimer.Result result = new SegmentReclaimer(config(), executor, GRACE).reclaim("quotes");
+
+        assertThat(result.unlinked()).isEmpty();
+        assertThat(Files.exists(base.resolve("quotes/20260727.0.arena"))).isTrue();
+    }
+
+    @Test
     void anUnknownTableReclaimsNothing() {
         SegmentReclaimer.Result result =
                 new SegmentReclaimer(config(), new FakeRollExecutor(), GRACE).reclaim("nope");

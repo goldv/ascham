@@ -63,9 +63,21 @@ public final class SegmentReclaimer {
         }
         Path newest = present.get(present.size() - 1).path();
 
+        String expectedArena = tableDir.toAbsolutePath().normalize().toString();
         List<Path> unlinked = new ArrayList<>();
         long bytes = 0;
         for (RollExecutor.ReclaimableDay day : executor.reclaimable(table, grace)) {
+            // Segment names are only unique within one arena, so a log entry written by a *different*
+            // arena feeding this same catalog table would otherwise match by name and delete days
+            // this arena never archived. Verified rather than assumed: the cost of being wrong here
+            // is silent, unrecoverable loss of un-archived data.
+            if (day.arenaDir() != null && !day.arenaDir().equals(expectedArena)) {
+                LOG.log(System.Logger.Level.ERROR,
+                        "roll-log entry for {0} day {1} was written from arena {2}, not {3} — refusing "
+                                + "to reclaim; two arenas appear to share one catalog table",
+                        table, day.day(), day.arenaDir(), expectedArena);
+                continue;
+            }
             for (String name : day.segmentNames()) {
                 Path segment = resolveWithin(tableDir, name);
                 if (segment == null || !Files.exists(segment)) {

@@ -134,6 +134,7 @@ CREATE TABLE IF NOT EXISTS hist.ito_meta.roll_log (
     day          DATE,
     rows         BIGINT,
     segments     VARCHAR,      -- comma-joined file names rolled, for audit == reclaim set
+    arena_dir    VARCHAR,      -- which arena those names belong to (see below)
     committed_at TIMESTAMP
 );
 

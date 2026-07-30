@@ -18,7 +18,8 @@ import java.util.Optional;
 final class FakeRollExecutor implements RollExecutor {
 
     /** A day the fake has "archived", with the grace clock the test controls. */
-    private record Logged(LocalDate day, long rows, List<String> segments, long committedAtMillis) {
+    private record Logged(LocalDate day, long rows, List<String> segments, String arenaDir,
+                          long committedAtMillis) {
     }
 
     private final Map<String, List<Logged>> log = new LinkedHashMap<>();
@@ -65,14 +66,16 @@ final class FakeRollExecutor implements RollExecutor {
         List<String> names = segments.stream().map(p -> p.getFileName().toString()).toList();
         long rows = segments.size() * 10L;
         dataRows.put(key(table, day), rows);
-        log.computeIfAbsent(table, t -> new ArrayList<>()).add(new Logged(day, rows, names, nowMillis));
+        log.computeIfAbsent(table, t -> new ArrayList<>())
+                .add(new Logged(day, rows, names, arenaDirOf(segments), nowMillis));
         return rows;
     }
 
     @Override
     public void logDayOnly(String table, LocalDate day, long rows, List<String> segmentNames) {
         calls.add("logDayOnly:" + table + ":" + day);
-        log.computeIfAbsent(table, t -> new ArrayList<>()).add(new Logged(day, rows, segmentNames, nowMillis));
+        log.computeIfAbsent(table, t -> new ArrayList<>())
+                .add(new Logged(day, rows, segmentNames, arenaDir, nowMillis));
     }
 
     @Override
@@ -80,7 +83,7 @@ final class FakeRollExecutor implements RollExecutor {
         List<ReclaimableDay> out = new ArrayList<>();
         for (Logged l : log.getOrDefault(table, List.of())) {
             if (nowMillis - l.committedAtMillis() >= grace.toMillis()) {
-                out.add(new ReclaimableDay(l.day(), l.segments()));
+                out.add(new ReclaimableDay(l.day(), l.segments(), l.arenaDir()));
             }
         }
         return out;
@@ -88,6 +91,17 @@ final class FakeRollExecutor implements RollExecutor {
 
     @Override
     public void close() {
+    }
+
+    /** Set to stamp log entries with a specific arena dir; null means "match whatever asks". */
+    String arenaDir;
+
+    private String arenaDirOf(List<Path> segments) {
+        if (arenaDir != null) {
+            return arenaDir;
+        }
+        return segments.isEmpty() ? null
+                : segments.get(0).getParent().toAbsolutePath().normalize().toString();
     }
 
     /** Pretends a day's data was committed without its log entry — the crash window. */

@@ -59,8 +59,15 @@ public interface RollExecutor extends AutoCloseable {
      */
     List<ReclaimableDay> reclaimable(String table, Duration grace);
 
-    /** A rolled day that is now old enough to have its arena segments released. */
-    record ReclaimableDay(LocalDate day, List<String> segmentNames) {
+    /**
+     * A rolled day old enough to have its arena segments released.
+     *
+     * @param arenaDir the arena table directory the segments were read from. Segment names are only
+     *                 unique within one arena, so reclamation must confirm the log entry refers to
+     *                 the arena it is about to delete from — two arenas feeding one catalog would
+     *                 otherwise let one of them delete the other's un-archived days.
+     */
+    record ReclaimableDay(LocalDate day, List<String> segmentNames, String arenaDir) {
     }
 
     @Override

@@ -87,7 +87,8 @@ public final class DuckDbRollExecutor implements RollExecutor {
         exec("CREATE TABLE IF NOT EXISTS " + config.qualified(table)
                 + " (" + TypeMapping.ddlColumnList(schema) + ") WITH ('format-version' = '3')");
         exec("CREATE TABLE IF NOT EXISTS " + config.qualifiedRollLog()
-                + " (table_name VARCHAR, day DATE, rows BIGINT, segments VARCHAR, committed_at TIMESTAMP)"
+                + " (table_name VARCHAR, day DATE, rows BIGINT, segments VARCHAR, arena_dir VARCHAR,"
+                + "  committed_at TIMESTAMP)"
                 + " WITH ('format-version' = '3')");
 
         // Partitioning is not accepted inside CREATE TABLE (parser error) — it is a separate ALTER,
@@ -149,7 +150,7 @@ public final class DuckDbRollExecutor implements RollExecutor {
                 rows = st.executeLargeUpdate("INSERT INTO " + config.qualified(table) + " " + select);
                 st.executeUpdate("INSERT INTO " + config.qualifiedRollLog() + " VALUES ("
                         + literal(table) + ", DATE " + literal(day.toString()) + ", " + rows + ", "
-                        + literal(segmentNames) + ", now())");
+                        + literal(segmentNames) + ", " + literal(arenaDirOf(table)) + ", now())");
             }
             connection.commit();
             return rows;
@@ -165,7 +166,7 @@ public final class DuckDbRollExecutor implements RollExecutor {
     public List<ReclaimableDay> reclaimable(String table, java.time.Duration grace) {
         // Age is computed in SQL against the store's own now(), so the roller's local clock — which
         // may be skewed from the catalog's — cannot shorten the grace window.
-        String sql = "SELECT day, segments FROM " + config.qualifiedRollLog()
+        String sql = "SELECT day, segments, arena_dir FROM " + config.qualifiedRollLog()
                 + " WHERE table_name = " + literal(table)
                 + " AND committed_at <= now() - INTERVAL " + grace.toSeconds() + " SECOND"
                 + " ORDER BY day";
@@ -176,7 +177,7 @@ public final class DuckDbRollExecutor implements RollExecutor {
                 List<String> names = segments == null || segments.isBlank()
                         ? List.of()
                         : List.of(segments.split(","));
-                out.add(new ReclaimableDay(rs.getDate(1).toLocalDate(), names));
+                out.add(new ReclaimableDay(rs.getDate(1).toLocalDate(), names, rs.getString(3)));
             }
         } catch (SQLException e) {
             throw new ColdException("failed to list reclaimable days for " + table, e);
@@ -188,7 +189,7 @@ public final class DuckDbRollExecutor implements RollExecutor {
     public void logDayOnly(String table, LocalDate day, long rows, List<String> segmentNames) {
         exec("INSERT INTO " + config.qualifiedRollLog() + " VALUES (" + literal(table)
                 + ", DATE " + literal(day.toString()) + ", " + rows + ", "
-                + literal(String.join(",", segmentNames)) + ", now())");
+                + literal(String.join(",", segmentNames)) + ", " + literal(arenaDirOf(table)) + ", now())");
     }
 
     @Override
@@ -212,6 +213,11 @@ public final class DuckDbRollExecutor implements RollExecutor {
     }
 
     // --- helpers ---
+
+    /** The arena table directory this executor reads from — recorded so reclamation can verify it. */
+    private String arenaDirOf(String table) {
+        return config.arenaBaseDir().resolve(table).toAbsolutePath().normalize().toString();
+    }
 
     /** The half-open day window on a table's time column, as used by the roll and by recovery. */
     private static String dayPredicate(String timeColumn, LocalDate day) {
