@@ -3,11 +3,10 @@ package io.ito.demo;
 import io.ito.arena.rotate.DailyRotationPolicy;
 import io.ito.arena.rotate.RotatingWriter;
 import io.ito.arena.rotate.SegmentDirectory;
-import io.ito.arena.write.GenericAppender;
+import io.ito.arena.write.Appender;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.util.List;
-import java.util.function.Consumer;
 import org.agrona.concurrent.EpochNanoClock;
 import org.agrona.concurrent.UnsafeBuffer;
 
@@ -25,48 +24,9 @@ public final class MarketDataWriter implements AutoCloseable {
 
     private final RotatingWriter quotes;
     private final RotatingWriter trades;
+    private final Appender quoteAppender;
+    private final Appender tradeAppender;
     private final MarketDataGenerator generator;
-
-    // Per-event values captured before the append lambda runs. RotatingWriter may re-invoke a lambda
-    // on a fresh segment when the current one fills, so the lambda must be a pure function of these
-    // fields — it may not advance the generator or mutate anything.
-    private long ts;
-    private UnsafeBuffer sym;
-    private int symLen;
-    private UnsafeBuffer venue;
-    private int venueLen;
-    private long bidPx;
-    private long askPx;
-    private int bidSz;
-    private int askSz;
-    private long px;
-    private int sz;
-    private UnsafeBuffer side;
-    private long tradeId;
-
-    private final Consumer<GenericAppender> quoteRow = a -> {
-        a.beginRow();
-        a.setLong(0, ts);
-        a.setBytes(1, sym, 0, symLen);
-        a.setLong(2, bidPx);
-        a.setLong(3, askPx);
-        a.setInt(4, bidSz);
-        a.setInt(5, askSz);
-        a.setBytes(6, venue, 0, venueLen);
-        a.endRow();
-    };
-
-    private final Consumer<GenericAppender> tradeRow = a -> {
-        a.beginRow();
-        a.setLong(0, ts);
-        a.setBytes(1, sym, 0, symLen);
-        a.setLong(2, px);
-        a.setInt(3, sz);
-        a.setBytes(4, side, 0, 1);
-        a.setLong(5, tradeId);
-        a.setBytes(6, venue, 0, venueLen);
-        a.endRow();
-    };
 
     public MarketDataWriter(Path baseDir, List<String> symbols, int batchRows, int maxBatches,
                             long seed, int quotesPerTrade, Clock clock, EpochNanoClock nanoClock) {
@@ -79,6 +39,8 @@ public final class MarketDataWriter implements AutoCloseable {
                 new DailyRotationPolicy(), clock, nanoClock);
         this.trades = RotatingWriter.open(tradesDir, DemoSchemas.trades(batchRows), maxBatches, epoch,
                 new DailyRotationPolicy(), clock, nanoClock);
+        this.quoteAppender = quotes.appender();
+        this.tradeAppender = trades.appender();
     }
 
     /**
@@ -87,23 +49,32 @@ public final class MarketDataWriter implements AutoCloseable {
      */
     public boolean writeEvent(long ts) {
         MarketDataGenerator.Event e = generator.next(ts);
-        this.ts = e.ts;
-        this.sym = generator.symbolBuffer(e.symbolIndex);
-        this.symLen = sym.capacity();
-        this.venue = generator.venueBuffer(e.venueIndex);
-        this.venueLen = venue.capacity();
-        this.bidPx = e.bidPx;
-        this.askPx = e.askPx;
-        this.bidSz = e.bidSz;
-        this.askSz = e.askSz;
-        quotes.append(quoteRow);
+        UnsafeBuffer sym = generator.symbolBuffer(e.symbolIndex);
+        UnsafeBuffer venue = generator.venueBuffer(e.venueIndex);
+
+        Appender q = quoteAppender;
+        q.beginRow();
+        q.setLong(0, e.ts);
+        q.setBytes(1, sym, 0, sym.capacity());
+        q.setLong(2, e.bidPx);
+        q.setLong(3, e.askPx);
+        q.setInt(4, e.bidSz);
+        q.setInt(5, e.askSz);
+        q.setBytes(6, venue, 0, venue.capacity());
+        q.endRow();
 
         if (e.isTrade) {
-            this.px = e.px;
-            this.sz = e.sz;
-            this.side = generator.sideBuffer(e.buy);
-            this.tradeId = e.tradeId;
-            trades.append(tradeRow);
+            UnsafeBuffer side = generator.sideBuffer(e.buy);
+            Appender t = tradeAppender;
+            t.beginRow();
+            t.setLong(0, e.ts);
+            t.setBytes(1, sym, 0, sym.capacity());
+            t.setLong(2, e.px);
+            t.setInt(3, e.sz);
+            t.setBytes(4, side, 0, 1);
+            t.setLong(5, e.tradeId);
+            t.setBytes(6, venue, 0, venue.capacity());
+            t.endRow();
             return true;
         }
         return false;

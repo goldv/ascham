@@ -173,7 +173,7 @@ class RollIT {
                 new DailyRotationPolicy(),
                 new ColdFixtures.MutableClock(D1.atStartOfDay(ZoneOffset.UTC).toInstant()),
                 ColdFixtures.counterNanoClock())) {
-            writer.append(ColdFixtures.row(d1Start + 5, "AAPL", 1));
+            ColdFixtures.append(writer, d1Start + 5, "AAPL", 1);
 
             Thread beating = new Thread(() -> {
                 while (!Thread.currentThread().isInterrupted()) {
@@ -207,9 +207,9 @@ class RollIT {
                 new DailyRotationPolicy(),
                 new ColdFixtures.MutableClock(D1.atStartOfDay(ZoneOffset.UTC).toInstant()),
                 ColdFixtures.counterNanoClock())) {
-            writer.append(ColdFixtures.row(d1Start + 5, "AAPL", 1));
-            writer.append(ColdFixtures.row( // a row whose event time belongs to the next day
-                    D2.atStartOfDay(ZoneOffset.UTC).toInstant().getEpochSecond() * 1_000_000_000L + 9, "MSFT", 2));
+            ColdFixtures.append(writer, d1Start + 5, "AAPL", 1);
+            ColdFixtures.append(writer, // a row whose event time belongs to the next day
+                    D2.atStartOfDay(ZoneOffset.UTC).toInstant().getEpochSecond() * 1_000_000_000L + 9, "MSFT", 2);
         }
         // Make D1 provably frozen by giving the directory a newer day.
         ColdFixtures.writeDays(arenaBase, List.of(D2), 5);

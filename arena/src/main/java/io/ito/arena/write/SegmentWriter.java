@@ -20,7 +20,7 @@ import java.nio.file.StandardCopyOption;
 import org.agrona.concurrent.EpochNanoClock;
 
 /**
- * Single-writer segment lifecycle: create, append (via {@link GenericAppender}), seal, heartbeat,
+ * Single-writer segment lifecycle: create, append (via {@link Appender}), seal, heartbeat,
  * close. Rows accumulate in place at capacity stride and are never rewound (spec invariant 1).
  *
  * <p>Created via {@link #createSegment}, which lays out the regions, writes the header, embeds the
@@ -36,6 +36,7 @@ public final class SegmentWriter implements AutoCloseable {
     private final CatalogCodec catalog;
     private final EpochNanoClock clock;
     private final BatchCursor cursor;
+    private final GenericAppender appender;
     private boolean closed;
 
     private SegmentWriter(SegmentFile file, ArenaSchema schema, LayoutDescriptor layout,
@@ -48,6 +49,7 @@ public final class SegmentWriter implements AutoCloseable {
         this.header = new SegmentHeader(file.control());
         this.catalog = new CatalogCodec(file.control(), regions.catalogOffset(), regions.catalogCapacity());
         this.cursor = new BatchCursor(schema, layout, file.data(), catalog, header, regions, clock);
+        this.appender = new GenericAppender(cursor);
     }
 
     /**
@@ -98,9 +100,12 @@ public final class SegmentWriter implements AutoCloseable {
         return writer;
     }
 
-    /** Generic, descriptor-driven appender; correctness over speed. */
-    public GenericAppender genericAppender() {
-        return new GenericAppender(cursor);
+    /**
+     * The segment's single appender. Segment exhaustion is fatal here ({@code SegmentFullException});
+     * use {@link io.ito.arena.rotate.RotatingWriter#appender()} for transparent rollover.
+     */
+    public Appender appender() {
+        return appender;
     }
 
     /** Seals the in-progress batch and opens the next (no copy — invariant 1). */
@@ -130,14 +135,9 @@ public final class SegmentWriter implements AutoCloseable {
         return file;
     }
 
-    /** Package-internal: the shared append engine, handed to {@link RowAppender} subclasses. */
+    /** Package-internal: the shared append engine, resolved per-operation by {@link RollingAppender}. */
     BatchCursor cursor() {
         return cursor;
-    }
-
-    /** Package-internal: the live header, for the typed appender's schema-hash verification. */
-    SegmentHeader header() {
-        return header;
     }
 
     /**

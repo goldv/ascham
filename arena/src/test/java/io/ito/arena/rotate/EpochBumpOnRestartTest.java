@@ -25,7 +25,7 @@ class EpochBumpOnRestartTest {
         Path first;
         try (RotatingWriter writer = RotatingWriter.open(dir, schema, 8, 1L,
                 new DailyRotationPolicy(), clock, RotateFixtures.counterNanoClock())) {
-            writer.append(RotateFixtures.row(1000, 1));
+            RotateFixtures.append(writer, 1000, 1);
             first = writer.currentPath();
         }
         assertThat(dir.latestEpoch()).isEqualTo(OptionalLong.of(1));
@@ -35,7 +35,7 @@ class EpochBumpOnRestartTest {
         Path second;
         try (RotatingWriter writer = RotatingWriter.open(dir, schema, 8, restartEpoch,
                 new DailyRotationPolicy(), clock, RotateFixtures.counterNanoClock())) {
-            writer.append(RotateFixtures.row(2000, 2));
+            RotateFixtures.append(writer, 2000, 2);
             second = writer.currentPath();
         }
 

@@ -74,7 +74,13 @@ arena_capacity = data_off + data_len               ; = total file size
 ```
 
 `N = catalog_len / 64` is therefore recoverable by a reader from the region table alone. The writer
-rotates (starts a new segment) before it would open batch `N`.
+rotates (starts a new segment) before it would open batch `N`. One rotation case starts mid-row:
+when a varlen column exhausts its per-batch bytes while batch `N-1` is open, the writer adopts the
+partially-written open row into batch 0 of the successor segment (the cross-segment arm of the
+varlen-exhaustion migration). The old and new segments briefly coexist mapped in the writer; the
+open row was never counted in any published `length`, so readers of the old segment see only its
+completed prefix, and the row becomes visible in the new segment through the ordinary append
+release-store.
 
 ### Create-time atomicity
 

@@ -1,7 +1,7 @@
 package io.ito.arena.bench;
 
 import io.ito.arena.schema.ArenaSchema;
-import io.ito.arena.write.GenericAppender;
+import io.ito.arena.write.Appender;
 import io.ito.arena.write.SegmentWriter;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -35,7 +35,7 @@ public class AppendBenchmark {
 
     private Path dir;
     private SegmentWriter writer;
-    private GenericAppender appender;
+    private Appender appender;
     private final UnsafeBuffer buf16 = new UnsafeBuffer(new byte[16]);
     private final UnsafeBuffer buf8 = new UnsafeBuffer(new byte[8]);
     private long row;
@@ -89,11 +89,11 @@ public class AppendBenchmark {
         ArenaSchema schema = BenchSupport.allTypes(BATCH_ROWS);
         writer = SegmentWriter.createSegment(
                 dir.resolve("s-" + (seq++) + ".arena"), schema, MAX_BATCHES, 1L, seq, BenchSupport.counterClock());
-        appender = writer.genericAppender();
+        appender = writer.appender();
         row = 0;
     }
 
-    private static void writeRow(GenericAppender a, int r, UnsafeBuffer buf16, UnsafeBuffer buf8) {
+    private static void writeRow(Appender a, int r, UnsafeBuffer buf16, UnsafeBuffer buf8) {
         a.beginRow();
         a.setLong(0, r);
         a.setBool(1, (r & 1) == 0);

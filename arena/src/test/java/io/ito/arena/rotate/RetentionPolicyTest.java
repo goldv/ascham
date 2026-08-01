@@ -32,10 +32,10 @@ class RetentionPolicyTest {
 
         try (RotatingWriter writer = RotatingWriter.open(dir, schema, 8, 1L,
                 new DailyRotationPolicy(), clock, RotateFixtures.counterNanoClock())) {
-            writer.append(RotateFixtures.row(1000, 1));
+            RotateFixtures.append(writer, 1000, 1);
             for (int i = 0; i < 5; i++) {
                 writer.rotate();
-                writer.append(RotateFixtures.row(1000 + i, i));
+                RotateFixtures.append(writer, 1000 + i, i);
             }
         }
 
@@ -52,7 +52,7 @@ class RetentionPolicyTest {
         try (RotatingWriter writer = RotatingWriter.open(dir, schema, 8, 1L,
                 Retention.emergencyBackstop(2),
                 new DailyRotationPolicy(), clock, RotateFixtures.counterNanoClock())) {
-            writer.append(RotateFixtures.row(1000, 1));
+            RotateFixtures.append(writer, 1000, 1);
             writer.rotate();
             writer.rotate();
             writer.rotate();

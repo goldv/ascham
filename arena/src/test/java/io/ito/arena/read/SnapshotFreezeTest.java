@@ -3,7 +3,7 @@ package io.ito.arena.read;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.ito.arena.schema.ArenaSchema;
-import io.ito.arena.write.GenericAppender;
+import io.ito.arena.write.Appender;
 import io.ito.arena.write.SegmentWriter;
 import java.nio.file.Path;
 import org.apache.arrow.vector.BigIntVector;
@@ -23,14 +23,14 @@ class SnapshotFreezeTest {
 
         try (SegmentWriter writer = SegmentWriter.createSegment(
                 path, schema, 4, 1L, 1L, new ReaderFixtures.FakeClock(0, 1))) {
-            appendRows(writer.genericAppender(), 0, 3);
+            appendRows(writer.appender(), 0, 3);
 
             try (SnapshotReader reader = SnapshotReader.open(path)) {
                 Snapshot frozen = reader.snapshot();
                 assertThat(frozen.batches().get(0).rowCount()).isEqualTo(3);
 
                 // Writer keeps appending into the same in-progress batch.
-                appendRows(writer.genericAppender(), 3, 5);
+                appendRows(writer.appender(), 3, 5);
 
                 // The frozen snapshot is unchanged; a fresh snapshot sees the new rows.
                 assertThat(frozen.batches().get(0).rowCount()).isEqualTo(3);
@@ -47,7 +47,7 @@ class SnapshotFreezeTest {
         }
     }
 
-    private static void appendRows(GenericAppender a, int from, int to) {
+    private static void appendRows(Appender a, int from, int to) {
         for (int r = from; r < to; r++) {
             a.beginRow();
             a.setLong(0, 1000 + r);

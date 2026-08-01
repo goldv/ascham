@@ -48,8 +48,7 @@ Multi-module from day one (future `:query`/`:cold` tiers slot in beside):
 `gradle/libs.versions.toml` (resolved against Maven Central / the Plugin Portal at kickoff, 2026-07):
 agrona 2.5.0, arrow 19.0.0 (`arrow-vector`, `arrow-memory-core`, `arrow-memory-unsafe` runtime-only,
 `arrow-c-data`), junit-bom 5.14.4, assertj 3.27.7, jmh 1.37 + plugin `me.champeau.jmh` 0.7.3,
-jcstress 0.16 + plugin `io.github.reyerizo.gradle.jcstress` 0.9.0. **No codegen library** — the
-typed-appender generator is a plain `SourceWriter`/`StringBuilder` (§4b). The jmh/jcstress entries
+jcstress 0.16 + plugin `io.github.reyerizo.gradle.jcstress` 0.9.0. The jmh/jcstress entries
 are added at their milestones (M2 bench, M4 concurrency) to keep the early build lean.
 
 JVM flags, applied to test/jmh/jcstress forks. The first is load-bearing and non-obvious: Agrona
@@ -76,9 +75,8 @@ Base package `io.ito.arena` (placeholder, confirm with `ARENAFMT`):
 io.ito.arena.schema   — load, validate, canonicalise Arrow schema + arena.* metadata, SHA-256
 io.ito.arena.layout   — pure schema → byte-layout function + descriptor codec
 io.ito.arena.segment  — format constants, header/catalog codecs, mapping, rotation (M5)
-io.ito.arena.write    — SegmentWriter, BatchCursor, GenericAppender, RowAppender base
+io.ito.arena.write    — SegmentWriter, BatchCursor, Appender, GenericAppender, RollingAppender
 io.ito.arena.read     — SnapshotReader, Snapshot, BatchView, pruning, liveness
-io.ito.arena.codegen  — typed-appender source generator + CLI main
 io.ito.arena.util     — Alignment, Sha256
 ```
 
@@ -132,7 +130,7 @@ io.ito.arena.util     — Alignment, Sha256
 ### write (M2)
 
 - `SegmentWriter` (AutoCloseable) — `createSegment(Path, ArenaSchema, capacityBytes, epoch, EpochNanoClock)`,
-  `genericAppender()`, `seal()`, `rotate()`, `heartbeat()`, `close()`. The injected Agrona
+  `appender()`, `seal()`, `rotate()`, `heartbeat()`, `close()`. The injected Agrona
   `EpochNanoClock` is what makes golden-corpus `seal_nanos`/epoch deterministic. Rejects schemas
   with >1 family at create ("multi-family write is post-v1"), never at append.
 - `BatchCursor` — **sole owner of the publication protocol** (invariants 1–3 live here and only
@@ -142,11 +140,15 @@ io.ito.arena.util     — Alignment, Sha256
   class and methods): reached only through the two appenders and `SegmentWriter`, so producers
   cannot drive `seal`/`openBatch` or reorder publication — the appenders are the only way to write
   rows, `SegmentWriter` the only way to drive lifecycle.
-- `GenericAppender` — descriptor-driven, correctness-first: `beginRow()`, `setBool/setByte/…/setLong`,
+- `Appender` (interface) — the finalized row-writing contract: `beginRow()`, `setBool/setByte/…/setLong`,
   `setFloat/setDouble`, `setDecimal128(col, low, high)`, `setFixedBytes/setBytes(col, DirectBuffer, off, len)`,
-  `setNull(col)`, `endRow()`. Delegates all publication to `BatchCursor`.
-- `RowAppender` (abstract) — base for generated appenders; `beginRow()/endRow()` are **final** and
-  delegate to the cursor, so codegen physically cannot reorder the publication protocol.
+  `setNull(col)`, `endRow()`.
+- `GenericAppender` — descriptor-driven `Appender` bound to one segment (`SegmentWriter.appender()`,
+  one cached instance per writer). Delegates all publication to `BatchCursor`.
+- `RollingAppender` — `Appender` spanning rotations (`RotatingWriter.appender()`). Rotation is
+  decided exception-free at `beginRow` (time policy, row-count capacity) and at `setBytes` (varlen
+  exhaustion in the last batch, where the open row is adopted into the successor segment via
+  `BatchCursor.adoptOpenRowFrom`); producers never see `SegmentFullException` and never replay rows.
 
 ### read (M3)
 
@@ -164,16 +166,6 @@ io.ito.arena.util     — Alignment, Sha256
   need no ordering; documented in M0, pinned by jcstress case 2).
 - `LivenessMonitor` (M5) — epoch/heartbeat staleness; stuck-in-progress detection (length
   unchanged while heartbeat advances).
-
-### codegen (M2, second half)
-
-- `TypedAppenderGenerator.generate(schema, pkg, className) → String` — deterministic Java source:
-  no timestamps, columns in ordinal order, embedded `SCHEMA_SHA256` constant verified in `bind()`
-  against the live segment header, per-column offset constants baked from the descriptor, setters
-  taking primitives and `DirectBuffer` slices only (never `String`/boxed).
-- `GenerateAppendersMain` — CLI (schema files → output dir), wired as a `JavaExec` task; `:arena`
-  uses it to generate test appenders into `build/generated/sources/arena/test`, proving the recipe
-  consumers copy and feeding the equivalence suite.
 
 ## 4. Key mechanism decisions
 
@@ -206,29 +198,15 @@ to `ControlRegion` also makes any future swap a one-class change. Ordered fields
 catalog `length` (release/acquire), header heartbeat (release/acquire). Epoch/region table are
 plain-written before the atomic rename at create.
 
-### 4b. Typed appender: build-time source generation, no runtime bytecode
+### 4b. Typed appenders: removed
 
-A *typed* appender is only useful to a producer whose code already says `setBidPx(long)` — that
-producer knows the schema at its own compile time; truly-runtime schemas are what `GenericAppender`
-is for. Build-time source gen is deterministic (snapshot-testable), debuggable (real stack traces),
-and dependency-free. Runtime alternatives are all worse for v1: the ClassFile API is preview on 21
-(banned), ASM/ByteBuddy is a dependency plus correctness surface, MethodHandles can't express named
-typed setters. Plain `StringBuilder`-based generator (flat setters, 3–6 lines each); adopt the
-palantir JavaPoet fork later only if it grows unwieldy.
-
-**Generated-class shape (as built):** `public final class TradesAppender extends RowAppender`, a
-`public static final String SCHEMA_SHA256` baked from the schema, and a `(SegmentWriter)` constructor
-that calls `super(writer, SCHEMA_SHA256)`. `RowAppender`'s constructor verifies that hash against the
-live segment header (invariant 7 on the codegen path) and grabs the package-private `BatchCursor`.
-Each column gets a named, primitive-typed setter (`setBidPx(long)`, `setSym(DirectBuffer,int,int)`,
-plus `setBidPxNull()`) that forwards to a `protected` `RowAppender` method carrying the baked column
-ordinal — **not** direct buffer writes. Two reasons the setters forward rather than write bytes
-directly: (1) generated code lives in the *consumer's* package and must not reach the package-private
-cursor/data buffer; (2) keeping all byte-writing — offsets, validity RMW, varlen-exhaustion
-migration — in the single `BatchCursor` is what makes the typed and generic appenders provably
-byte-identical (the equivalence test) and stops regenerated code from reordering publication.
-`beginRow`/`endRow` are inherited `final`, so codegen physically cannot reorder the protocol. The
-forwarding is allocation-free (primitives, no boxing), so the hot-path requirement still holds.
+M2 shipped a build-time source generator (`TypedAppenderGenerator` + `RowAppender` base) producing
+per-schema typed appenders (`setBidPx(long)` …) byte-identical to `GenericAppender`. It was removed
+once the `Appender` interface landed: it had no consumers, was never wired into any build, and the
+generic path is already allocation-free (the `AllocationTest` gate), so the typed layer bought only
+compile-time column-name checking at the cost of a second write path and an equivalence suite. All
+byte-writing stays in the single package-private `BatchCursor`, reached only through the `Appender`
+implementations — the property the codegen design existed to protect.
 
 ### 4c. Writer accumulation, invariant-2 enforcement, families
 
@@ -306,13 +284,12 @@ twice ⇒ equal + byte-identical encoding — no jqwik dep), `LayoutAlignmentTes
 stride %4096==0), `LayoutCodecRoundTripTest`.
 
 **M2 — writer.** Order: `SegmentFormat` + `ControlRegion` (alignment probe) → header/catalog
-codecs → `SegmentFile` → `BatchCursor` → `SegmentWriter` + `GenericAppender` → seal paths →
-codegen. Tests: `ControlRegionTest`, `SegmentCreateTest` (atomic create), `GenericAppenderTest`
+codecs → `SegmentFile` → `BatchCursor` → `SegmentWriter` + `GenericAppender` → seal paths.
+Tests: `ControlRegionTest`, `SegmentCreateTest` (atomic create), `GenericAppenderTest`
 (per-type round-trip via raw buffer reads — reader doesn't exist yet), `SealOnRowCountTest`,
 `VarlenCapacitySealTest` (exact fit, one-byte-over, `migrateOpenRow`), `NullHandlingTest`,
-`MultiFamilyRejectedAtCreateTest`; then `TypedAppenderGeneratorTest` (source snapshot),
-`AppenderEquivalenceTest` (same seeded op stream through generic and typed → byte-identical
-segments — the spec's equivalence requirement).
+`MultiFamilyRejectedAtCreateTest`. (The typed-appender generator and its equivalence suite were
+built here and later removed — §4b.)
 
 **M3 — reader.** `SnapshotReader.open` + hash check → `Snapshot` freezing → `BatchView` Arrow
 wrapping → pruning. Tests: `SchemaHashMismatchTest`, `SnapshotFreezeTest` (append after snapshot;
@@ -353,14 +330,20 @@ type via `VectorSchemaRoot`, nulls included), `PruneTest` (in-progress never pru
 `LivenessMonitor` (reader-side) — `poll()` → `ALIVE`/`STALLED` off heartbeat staleness, `writerEpoch()`
 for restart detection, `inProgressRowCount()` for stuck detection.
 
-**As built:** the append surface is `RotatingWriter` with `append(Consumer<GenericAppender>)` — the
-row lambda writes one row and rotation is transparent between rows (so a stale appender across a
-rotation is impossible). Time-based rotation comes from the policy; **capacity rotation is
-automatic** — `openBatch` throws `SegmentFullException` when the catalog fills, and `RotatingWriter`
-catches it, rotates, and re-runs the row lambda on the fresh segment. Rotating closes only the
-writer's mapping; readers hold independent mappings and the file survives (unlinked later by
-retention, kept alive for mapped readers by the kernel refcount). Restart bumps the epoch off
-`directory.latestEpoch()+1`. Tests: `RotationTest` (day boundary + capacity, fake clock),
+**As built:** the append surface is `RotatingWriter.appender()` — a long-lived `RollingAppender`
+the producer drives directly (`beginRow` … setters … `endRow`); rotation is transparent and
+exception-free. Time-based rotation comes from the policy, checked at `beginRow` (with the
+`LocalDate`/`Context` construction cached to the day boundary, so the per-row check allocates
+nothing); **capacity rotation is automatic** — `beginRow` rotates when the catalog would fill
+(`BatchCursor.rowCountRotationDue`), and a mid-row varlen exhaustion in the last batch adopts the
+open row into the successor segment (`adoptOpenRowFrom`; the only case not predictable at
+`beginRow`). `SegmentFullException` survives solely as the raw single-segment `SegmentWriter`
+backstop. Rotating closes only the writer's mapping; readers hold independent mappings and the file
+survives (unlinked later by retention, kept alive for mapped readers by the kernel refcount).
+Restart bumps the epoch off `directory.latestEpoch()+1`. Tests: `RotationTest` (day boundary, fake
+clock, mid-row heartbeat/rotate/close guards), `RowCountRotationTest` (exception-free capacity
+rollover), `MidRowVarlenRotationTest` (cross-segment open-row adoption, doomed-row rejection,
+intra-segment boundary), `RollingAppenderAllocationTest` (rolling path stays allocation-free),
 `RetentionUnlinkTest` (pre-unlink reader still reads; fresh open of the unlinked path fails),
 `EpochBumpOnRestartTest`, `LivenessTest` (heartbeat ALIVE/STALLED + in-progress row count).
 

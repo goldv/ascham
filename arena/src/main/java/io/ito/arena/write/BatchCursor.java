@@ -24,10 +24,10 @@ import org.apache.arrow.vector.types.pojo.Field;
  * path). Batch open, seal, and the rare varlen-exhaustion migration may touch preallocated scratch
  * but never allocate per row.
  *
- * <p>Package-internal by design: the engine is reached only through {@link GenericAppender}, the
- * generated typed appender ({@code RowAppender}), and {@link SegmentWriter} (lifecycle). Producers
- * never hold a {@code BatchCursor}, so they cannot drive {@code seal}/{@code openBatch} or reorder
- * the publication protocol.
+ * <p>Package-internal by design: the engine is reached only through {@link GenericAppender},
+ * {@link RollingAppender}, and {@link SegmentWriter} (lifecycle). Producers never hold a
+ * {@code BatchCursor}, so they cannot drive {@code seal}/{@code openBatch} or reorder the
+ * publication protocol.
  */
 final class BatchCursor {
 
@@ -277,10 +277,11 @@ final class BatchCursor {
                     + col + " capacity " + c.varlenCapacityBytes());
         }
         if (varlenEnd[col] + (long) length > c.varlenCapacityBytes()) {
-            migrateOpenRow(); // varlen-capacity seal (whichever binds first), no rewind
-            if (varlenEnd[col] + (long) length > c.varlenCapacityBytes()) {
+            // Doomed rows (own bytes alone overflow an empty batch) fail before any migration work.
+            if (openRowVarlenBytes(col) + (long) length > c.varlenCapacityBytes()) {
                 throw new IllegalStateException("row's varlen bytes for column " + col + " exceed capacity");
             }
+            migrateOpenRow(); // varlen-capacity seal (whichever binds first), no rewind
         }
         data.putBytes(batchBase + (int) c.dataOffset() + varlenEnd[col], src, offset, length);
         varlenEnd[col] += length;
@@ -297,38 +298,124 @@ final class BatchCursor {
     private void migrateOpenRow() {
         int oldBase = batchBase;
         int oldRow = rowIndex;
-        for (int ord : varlenOrdinals) {
-            int start = data.getInt(oldBase + (int) columns[ord].offsetsOffset() + oldRow * Integer.BYTES, LE);
-            migrateSrc[ord] = oldBase + (int) columns[ord].dataOffset() + start;
-            migrateLen[ord] = varlenEnd[ord] - start;
-        }
+        captureOpenRow();
         sealAt(batchIndex, oldRow);      // completed rows only
         openBatch(batchIndex + 1);       // resets rowIndex=0, varlenEnd=0, batchBase=new
         rowOpen = true;                  // the open row survives the migration
+        replantOpenRow(this, oldBase, oldRow);
+    }
 
+    /** Records the open row's partial varlen extents into this cursor's scratch arrays. */
+    private void captureOpenRow() {
+        for (int ord : varlenOrdinals) {
+            int start = openRowVarlenStart(ord);
+            migrateSrc[ord] = batchBase + (int) columns[ord].dataOffset() + start;
+            migrateLen[ord] = varlenEnd[ord] - start;
+        }
+    }
+
+    /** Byte offset where the open row's data starts within {@code col}'s varlen buffer. */
+    private int openRowVarlenStart(int col) {
+        return data.getInt(batchBase + (int) columns[col].offsetsOffset() + rowIndex * Integer.BYTES, LE);
+    }
+
+    /** Varlen bytes the open row has already written to {@code col} — what a migration must carry. */
+    private int openRowVarlenBytes(int col) {
+        return varlenEnd[col] - openRowVarlenStart(col);
+    }
+
+    /**
+     * Replants a captured open row (fixed cells, partial varlen bytes, validity bits) from
+     * {@code src}'s batch at {@code (oldBase, oldRow)} into this cursor's current batch at row 0.
+     * {@code src} may be this cursor (intra-segment migration) or the retiring segment's cursor
+     * (cross-segment adoption); the layouts are identical by schema.
+     */
+    private void replantOpenRow(BatchCursor src, int oldBase, int oldRow) {
         for (int col = 0; col < columnCount; col++) {
             ColumnLayout c = columns[col];
             if (enc[col] == Enc.VARLEN) {
-                int len = migrateLen[col];
+                int len = src.migrateLen[col];
                 if (len > 0) {
-                    data.putBytes(batchBase + (int) c.dataOffset(), data, migrateSrc[col], len);
+                    data.putBytes(batchBase + (int) c.dataOffset(), src.data, src.migrateSrc[col], len);
                 }
                 varlenEnd[col] = len;
             } else {
                 int width = c.elementWidth();
                 if (enc[col] == Enc.BOOL) {
-                    if (getBit(oldBase + (int) c.dataOffset(), oldRow)) {
+                    if (src.getBit(oldBase + (int) c.dataOffset(), oldRow)) {
                         setBit(batchBase + (int) c.dataOffset(), 0);
                     }
                 } else {
                     data.putBytes(batchBase + (int) c.dataOffset(),
-                            data, oldBase + (int) c.dataOffset() + oldRow * width, width);
+                            src.data, oldBase + (int) c.dataOffset() + oldRow * width, width);
                 }
             }
-            if (getBit(oldBase + (int) c.validityOffset(), oldRow)) {
+            if (src.getBit(oldBase + (int) c.validityOffset(), oldRow)) {
                 setBit(batchBase + (int) c.validityOffset(), 0);
             }
         }
+    }
+
+    // --- Rotation support (RollingAppender only): predict the SegmentFullException paths, adopt. ---
+
+    /** True iff the next {@link #beginRow()} would seal and there is no next batch to open. */
+    boolean rowCountRotationDue() {
+        return batchIndex >= 0 && rowIndex == batchRows && batchIndex + 1 >= catalog.capacity();
+    }
+
+    /**
+     * True iff {@code setBytes(col, …, length)} would migrate the open row with no next batch to
+     * migrate into. False for rows no rotation can fix — a value larger than the column capacity,
+     * or a row whose own accumulated bytes overflow an empty batch — those stay
+     * {@link IllegalArgumentException}/{@link IllegalStateException} in {@link #setBytes}.
+     */
+    boolean varlenRotationDue(int col, int length) {
+        if (enc[col] != Enc.VARLEN || !rowOpen) {
+            return false;
+        }
+        long cap = columns[col].varlenCapacityBytes();
+        if (varlenEnd[col] + (long) length <= cap) {
+            return false; // fits in place
+        }
+        if (openRowVarlenBytes(col) + (long) length > cap) {
+            return false; // doomed: setBytes rejects it without migrating
+        }
+        return batchIndex + 1 >= catalog.capacity();
+    }
+
+    boolean rowOpen() {
+        return rowOpen;
+    }
+
+    /**
+     * Adopts {@code source}'s open (begun, never ended) row into this cursor's batch 0, row 0 — the
+     * cross-segment arm of the varlen-exhaustion migration, for when the source segment has no next
+     * batch. The partial row was never published on the source (its length release-store only
+     * happens at {@code endRow}), so nothing published is retracted (invariant 1); on this side the
+     * data region is freshly zeroed, bits are only set (invariant 3), and the row becomes visible
+     * through the normal {@code endRow} release-store (invariant 2). Pending row stats move with
+     * the row so they fold into this segment's batch 0 at {@code endRow}.
+     *
+     * <p>Reads the source segment's mapping — must run before that segment is closed.
+     */
+    void adoptOpenRowFrom(BatchCursor source) {
+        if (!source.rowOpen) {
+            throw new IllegalStateException("source has no open row to adopt");
+        }
+        if (batchIndex != 0 || rowIndex != 0 || rowOpen) {
+            throw new IllegalStateException("adopting cursor must be a fresh segment at batch 0, row 0");
+        }
+        if (columnCount != source.columnCount) {
+            throw new IllegalStateException("adopting across different layouts");
+        }
+        source.captureOpenRow();
+        rowOpen = true;
+        replantOpenRow(source, source.batchBase, source.rowIndex);
+        rowTsValue = source.rowTsValue;
+        rowTsSet = source.rowTsSet;
+        rowStatValue = source.rowStatValue;
+        rowStatSet = source.rowStatSet;
+        source.rowOpen = false; // the row lives here now; the source seals its completed prefix only
     }
 
     // --- Helpers ---

@@ -31,7 +31,7 @@ class IdleRotationTest {
 
         try (RotatingWriter writer = RotatingWriter.open(dir, schema, 8, 1L,
                 new DailyRotationPolicy(), clock, RotateFixtures.counterNanoClock())) {
-            writer.append(RotateFixtures.row(1000, 1));
+            RotateFixtures.append(writer, 1000, 1);
             Path yesterday = writer.currentPath();
             assertThat(yesterday.getFileName()).hasToString("20260728.0.arena");
 
@@ -62,7 +62,7 @@ class IdleRotationTest {
 
         try (RotatingWriter writer = RotatingWriter.open(dir, schema, 8, 1L,
                 new DailyRotationPolicy(), clock, RotateFixtures.counterNanoClock())) {
-            writer.append(RotateFixtures.row(1000, 1));
+            RotateFixtures.append(writer, 1000, 1);
             Path path = writer.currentPath();
 
             long before;

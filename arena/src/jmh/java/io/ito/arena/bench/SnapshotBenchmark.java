@@ -3,7 +3,7 @@ package io.ito.arena.bench;
 import io.ito.arena.read.Snapshot;
 import io.ito.arena.read.SnapshotReader;
 import io.ito.arena.schema.ArenaSchema;
-import io.ito.arena.write.GenericAppender;
+import io.ito.arena.write.Appender;
 import io.ito.arena.write.SegmentWriter;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -45,7 +45,7 @@ public class SnapshotBenchmark {
         ArenaSchema schema = BenchSupport.tsStats(BATCH_ROWS);
         try (SegmentWriter writer = SegmentWriter.createSegment(
                 path, schema, batchCount + 1, 1L, 1L, BenchSupport.counterClock())) {
-            GenericAppender a = writer.genericAppender();
+            Appender a = writer.appender();
             for (int b = 0; b < batchCount; b++) {
                 for (int r = 0; r < BATCH_ROWS; r++) {
                     a.beginRow();

@@ -3,7 +3,7 @@ package io.ito.arena.read;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.ito.arena.schema.ArenaSchema;
-import io.ito.arena.write.GenericAppender;
+import io.ito.arena.write.Appender;
 import io.ito.arena.write.SegmentWriter;
 import java.nio.file.Path;
 import java.util.List;
@@ -24,7 +24,7 @@ class PruneTest {
 
         try (SegmentWriter writer = SegmentWriter.createSegment(
                 path, schema, 8, 1L, 1L, new ReaderFixtures.FakeClock(0, 1))) {
-            GenericAppender a = writer.genericAppender();
+            Appender a = writer.appender();
             append(a, 100, 10);
             append(a, 101, 11);
             append(a, 200, 20);
@@ -49,7 +49,7 @@ class PruneTest {
         }
     }
 
-    private static void append(GenericAppender a, long ts, long stat) {
+    private static void append(Appender a, long ts, long stat) {
         a.beginRow();
         a.setLong(0, ts);
         a.setLong(1, stat);

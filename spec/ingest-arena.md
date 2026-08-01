@@ -27,7 +27,7 @@ but **nothing in this module may be domain-specific**. It is an interpreter of s
 1. **Schema module** — load, validate, and canonicalise an Arrow schema plus arena metadata.
 2. **Layout descriptor** — a deterministic, pure function from schema → byte layout.
 3. **Segment format** — self-describing header, batch catalog, data region.
-4. **Java writer** — segment lifecycle, generated typed appenders, generic appender, seal.
+4. **Java writer** — segment lifecycle, the `Appender` row-writing contract, seal.
 5. **Java reader** — snapshot semantics, zero-copy `VectorSchemaRoot` views over mapped memory.
 6. **Conformance suite** — golden byte corpus + concurrency tests.
 
@@ -201,14 +201,15 @@ and none may be changed without an explicit decision.
 
 ### Writer
 
-Two appenders over identical byte output — verify equivalence in tests.
-
-- **Generated typed appender** — codegen from the schema, for allocation-free hot paths:
-  `beginRow()`, per-column typed setters, `endRow()`. Setters take primitives and
-  `DirectBuffer` slices, never `String` or boxed types.
-- **Generic appender** — driven by the runtime descriptor, for non-JVM-idiomatic producers,
-  CSV/replay loaders, and tests: `setLong(col, v)`, `setBytes(col, buf, off, len)`, etc.
-  Correctness over speed.
+One row-writing contract — the `Appender` interface: `beginRow()`, ordinal-addressed setters
+(`setLong(col, v)`, `setBytes(col, buf, off, len)`, …, taking primitives and `DirectBuffer`
+slices, never `String` or boxed types), `endRow()`. Allocation-free steady-state. Two
+implementations: the descriptor-driven `GenericAppender` bound to a single segment, and the
+`RollingAppender` that spans segment rotations (rotation decided exception-free inside
+`beginRow`/`setBytes`, including mid-row open-row adoption into the successor segment).
+(An earlier codegen'd typed appender — named per-column setters generated from the schema —
+was built and later removed: no consumers, and the generic path already met the
+allocation-free requirement.)
 
 Plus: `createSegment(schema, capacity, epoch)`, `seal()`, `rotate()`, `close()`,
 `heartbeat()`.
@@ -236,8 +237,7 @@ implementation code.**
 computation. Pure functions, no I/O. Property test: descriptor generation is deterministic
 and idempotent.
 
-**M2 — writer.** Segment creation, generic appender, seal, catalog maintenance. Then the
-generated typed appender.
+**M2 — writer.** Segment creation, generic appender, seal, catalog maintenance.
 
 **M3 — reader.** Snapshot, batch views, pruning. This validates the layout end-to-end
 without needing the C++ reader to exist.

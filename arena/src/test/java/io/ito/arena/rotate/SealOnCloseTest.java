@@ -35,9 +35,9 @@ class SealOnCloseTest {
         try (RotatingWriter writer = RotatingWriter.open(dir, schema, 8, 1L,
                 new DailyRotationPolicy(), clock, RotateFixtures.counterNanoClock())) {
             // 3 rows: batch0 seals on row count, batch1 holds the 3rd row and is still in progress.
-            writer.append(RotateFixtures.row(1000, 10));
-            writer.append(RotateFixtures.row(1001, 11));
-            writer.append(RotateFixtures.row(1002, 12));
+            RotateFixtures.append(writer, 1000, 10);
+            RotateFixtures.append(writer, 1001, 11);
+            RotateFixtures.append(writer, 1002, 12);
             first = writer.currentPath();
             writer.rotate();
         }
@@ -68,8 +68,8 @@ class SealOnCloseTest {
         Path only;
         try (RotatingWriter writer = RotatingWriter.open(dir, schema, 8, 1L,
                 new DailyRotationPolicy(), clock, RotateFixtures.counterNanoClock())) {
-            writer.append(RotateFixtures.row(2000, 20));
-            writer.append(RotateFixtures.row(2001, 21));
+            RotateFixtures.append(writer, 2000, 20);
+            RotateFixtures.append(writer, 2001, 21);
             only = writer.currentPath();
         } // close() seals
 
@@ -92,7 +92,7 @@ class SealOnCloseTest {
         try (RotatingWriter writer = RotatingWriter.open(dir, schema, 16, 1L,
                 new DailyRotationPolicy(), clock, RotateFixtures.counterNanoClock())) {
             for (int r = 0; r < 10; r++) { // 4 + 4 + 2, so the trailing batch is partial
-                writer.append(RotateFixtures.row(5000 + r, r));
+                RotateFixtures.append(writer, 5000 + r, r);
             }
             path = writer.currentPath();
         }
@@ -119,7 +119,7 @@ class SealOnCloseTest {
         Path path;
         try (RotatingWriter writer = RotatingWriter.open(dir, schema, 8, 1L,
                 new DailyRotationPolicy(), clock, RotateFixtures.counterNanoClock())) {
-            writer.append(RotateFixtures.row(4000, 40));
+            RotateFixtures.append(writer, 4000, 40);
             writer.current().seal(); // seals batch0 and opens an empty batch1
             path = writer.currentPath();
         }
@@ -142,7 +142,7 @@ class SealOnCloseTest {
 
         RotatingWriter writer = RotatingWriter.open(dir, schema, 8, 1L,
                 new DailyRotationPolicy(), clock, RotateFixtures.counterNanoClock());
-        writer.append(RotateFixtures.row(3000, 30));
+        RotateFixtures.append(writer, 3000, 30);
         Path path = writer.currentPath();
         writer.close();
         writer.close(); // must not re-seal or touch the unmapped buffer

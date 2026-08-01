@@ -3,7 +3,7 @@ package io.ito.arena.read;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.ito.arena.schema.ArenaSchema;
-import io.ito.arena.write.GenericAppender;
+import io.ito.arena.write.Appender;
 import io.ito.arena.write.SegmentWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -30,7 +30,7 @@ class ZeroCopyTest {
 
         try (SegmentWriter writer = SegmentWriter.createSegment(
                 path, schema, 4, 1L, 1L, new ReaderFixtures.FakeClock(0, 1))) {
-            GenericAppender a = writer.genericAppender();
+            Appender a = writer.appender();
             a.beginRow();
             a.setLong(0, 1000);
             a.setLong(5, 42);

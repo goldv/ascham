@@ -3,7 +3,7 @@ package io.ito.arena.read;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.ito.arena.schema.ArenaSchema;
-import io.ito.arena.write.GenericAppender;
+import io.ito.arena.write.Appender;
 import io.ito.arena.write.SegmentWriter;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -35,7 +35,7 @@ class BatchViewArrowValuesTest {
 
         try (SegmentWriter writer = SegmentWriter.createSegment(
                 path, schema, 4, 1L, 1L, new ReaderFixtures.FakeClock(0, 1))) {
-            GenericAppender a = writer.genericAppender();
+            Appender a = writer.appender();
             // Row 0: fully populated.
             row(a, 1000, true, 111, 1_000_000L, 1.5, "AAA", new byte[]{1, 2});
             // Row 1: i32 and sym null.
@@ -99,7 +99,7 @@ class BatchViewArrowValuesTest {
         }
     }
 
-    private static void row(GenericAppender a, long ts, boolean flag, int i32, long i64,
+    private static void row(Appender a, long ts, boolean flag, int i32, long i64,
                             double f64, String sym, byte[] bin) {
         a.beginRow();
         a.setLong(TS, ts);

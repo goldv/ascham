@@ -23,7 +23,7 @@ class SealAndNullTest {
 
         try (SegmentWriter writer = SegmentWriter.createSegment(
                 path, schema, 8, 1L, 1L, new WriterFixtures.FakeClock(0, 1))) {
-            GenericAppender a = writer.genericAppender();
+            Appender a = writer.appender();
             for (int r = 0; r < 5; r++) {
                 a.beginRow();
                 a.setLong(TS, 1000 + r);
@@ -50,7 +50,7 @@ class SealAndNullTest {
 
         try (SegmentWriter writer = SegmentWriter.createSegment(
                 path, schema, 4, 1L, 1L, new WriterFixtures.FakeClock(0, 1))) {
-            GenericAppender a = writer.genericAppender();
+            Appender a = writer.appender();
 
             // Row 0: fully populated (time + stats + varlens).
             a.beginRow();

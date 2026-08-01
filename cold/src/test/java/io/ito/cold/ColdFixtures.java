@@ -5,7 +5,7 @@ import io.ito.arena.rotate.RotatingWriter;
 import io.ito.arena.rotate.SegmentDirectory;
 import io.ito.arena.schema.ArenaSchema;
 import io.ito.arena.schema.MetadataKeys;
-import io.ito.arena.write.GenericAppender;
+import io.ito.arena.write.Appender;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Clock;
@@ -15,7 +15,6 @@ import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
-import java.util.function.Consumer;
 import org.agrona.concurrent.EpochNanoClock;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.apache.arrow.vector.types.TimeUnit;
@@ -48,6 +47,11 @@ final class ColdFixtures {
         @Override
         public Instant instant() {
             return instant;
+        }
+
+        @Override
+        public long millis() {
+            return instant.toEpochMilli(); // allocation-free, like Clock.systemUTC()
         }
 
         @Override
@@ -107,22 +111,22 @@ final class ColdFixtures {
                 long step = NANOS_PER_DAY / (rowsPerDay + 1L);
                 for (int r = 0; r < rowsPerDay; r++) {
                     long ts = dayStart + r * step + (r % 997) + 7;
-                    writer.append(row(ts, SYMBOLS[r % SYMBOLS.length], 1_000_000L + r));
+                    append(writer, ts, SYMBOLS[r % SYMBOLS.length], 1_000_000L + r);
                 }
             }
         }
     }
 
-    static Consumer<GenericAppender> row(long ts, String sym, long px) {
+    /** Appends one quotes row (tests, not hot path: the symbol buffer is built per call). */
+    static void append(RotatingWriter writer, long ts, String sym, long px) {
         byte[] symBytes = sym.getBytes(StandardCharsets.UTF_8);
         UnsafeBuffer buf = new UnsafeBuffer(symBytes);
-        return a -> {
-            a.beginRow();
-            a.setLong(0, ts);
-            a.setBytes(1, buf, 0, symBytes.length);
-            a.setLong(2, px);
-            a.endRow();
-        };
+        Appender a = writer.appender();
+        a.beginRow();
+        a.setLong(0, ts);
+        a.setBytes(1, buf, 0, symBytes.length);
+        a.setLong(2, px);
+        a.endRow();
     }
 
     private static Field field(String name, ArrowType type, Map<String, String> metadata) {

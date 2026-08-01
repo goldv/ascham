@@ -2,7 +2,7 @@ package io.ito.arena.conformance;
 
 import io.ito.arena.schema.ArenaSchema;
 import io.ito.arena.schema.MetadataKeys;
-import io.ito.arena.write.GenericAppender;
+import io.ito.arena.write.Appender;
 import io.ito.arena.write.SegmentWriter;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -37,7 +37,7 @@ final class GoldenCases {
 
         // Every supported type, all-non-null, spanning a seal boundary (batch 0 sealed, batch 1 open).
         cases.add(new GoldenCase("all_types", allTypes(4), 2, 1, 1, 5000, 100, 6, w -> {
-            GenericAppender a = w.genericAppender();
+            Appender a = w.appender();
             for (int r = 0; r < 6; r++) {
                 allTypesRow(a, r);
             }
@@ -45,7 +45,7 @@ final class GoldenCases {
 
         // All-null non-required columns (only the required time + stats columns are set).
         cases.add(new GoldenCase("all_null", allTypes(8), 1, 1, 1, 5000, 100, 3, w -> {
-            GenericAppender a = w.genericAppender();
+            Appender a = w.appender();
             for (int r = 0; r < 3; r++) {
                 a.beginRow();
                 a.setLong(0, BASE_TS + r);
@@ -59,7 +59,7 @@ final class GoldenCases {
 
         // In-progress batch mid-append (never sealed).
         cases.add(new GoldenCase("in_progress", allTypes(8), 1, 1, 1, 5000, 100, 5, w -> {
-            GenericAppender a = w.genericAppender();
+            Appender a = w.appender();
             for (int r = 0; r < 5; r++) {
                 allTypesRow(a, r);
             }
@@ -67,7 +67,7 @@ final class GoldenCases {
 
         // Varlen exactly filling capacity, then a byte that forces a capacity seal + open-row migration.
         cases.add(new GoldenCase("varlen_exact_capacity", varlen(100, 16), 2, 1, 1, 5000, 100, 2, w -> {
-            GenericAppender a = w.genericAppender();
+            Appender a = w.appender();
             a.beginRow();
             a.setLong(0, BASE_TS);
             a.setLong(1, 10);
@@ -82,7 +82,7 @@ final class GoldenCases {
 
         // Varlen empty strings (offsets[n+1] == offsets[n]).
         cases.add(new GoldenCase("varlen_empty", varlen(8, 64), 2, 1, 1, 5000, 100, 3, w -> {
-            GenericAppender a = w.genericAppender();
+            Appender a = w.appender();
             for (int r = 0; r < 3; r++) {
                 a.beginRow();
                 a.setLong(0, BASE_TS + r);
@@ -95,7 +95,7 @@ final class GoldenCases {
 
         // FixedSizeBinary at several widths {1, 7, 16, 33}.
         cases.add(new GoldenCase("fixed_binary_widths", fixedBinary(8), 2, 1, 1, 5000, 100, 4, w -> {
-            GenericAppender a = w.genericAppender();
+            Appender a = w.appender();
             for (int r = 0; r < 4; r++) {
                 a.beginRow();
                 a.setLong(0, BASE_TS + r);
@@ -111,7 +111,7 @@ final class GoldenCases {
 
         // Min/max at type bounds (integer extremes, unsigned maxima, Decimal128 ±(2^127-1)).
         cases.add(new GoldenCase("type_bounds", bounds(8), 2, 1, 1, 5000, 100, 3, w -> {
-            GenericAppender a = w.genericAppender();
+            Appender a = w.appender();
             boundsRow(a, 0, Byte.MIN_VALUE, Short.MIN_VALUE, Integer.MIN_VALUE, Long.MIN_VALUE,
                     (byte) 0, (short) 0, 0, 0L, -Float.MAX_VALUE, -Double.MAX_VALUE, 0L, Long.MIN_VALUE);
             boundsRow(a, 1, Byte.MAX_VALUE, Short.MAX_VALUE, Integer.MAX_VALUE, Long.MAX_VALUE,
@@ -126,7 +126,7 @@ final class GoldenCases {
 
     // --- Row scripts ---
 
-    private static void allTypesRow(GenericAppender a, int r) {
+    private static void allTypesRow(Appender a, int r) {
         a.beginRow();
         a.setLong(0, BASE_TS + r);
         a.setBool(1, (r & 1) == 0);
@@ -146,7 +146,7 @@ final class GoldenCases {
         a.endRow();
     }
 
-    private static void boundsRow(GenericAppender a, int r, byte i8, short i16, int i32, long i64,
+    private static void boundsRow(Appender a, int r, byte i8, short i16, int i32, long i64,
                                   byte u8, short u16, int u32, long u64, float f32, double f64,
                                   long decLow, long decHigh) {
         a.beginRow();

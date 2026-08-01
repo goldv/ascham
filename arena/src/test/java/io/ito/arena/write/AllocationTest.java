@@ -36,7 +36,7 @@ class AllocationTest {
 
         try (SegmentWriter writer = SegmentWriter.createSegment(
                 path(), schema, 1024, 1L, 1L, new WriterFixtures.FakeClock(0, 1))) {
-            GenericAppender a = writer.genericAppender();
+            Appender a = writer.appender();
 
             // Warm up: JIT the append path and cross several seal boundaries.
             for (int r = 0; r < 300_000; r++) {
@@ -57,7 +57,7 @@ class AllocationTest {
         }
     }
 
-    private static void writeRow(GenericAppender a, int r, UnsafeBuffer buf16, UnsafeBuffer buf8) {
+    private static void writeRow(Appender a, int r, UnsafeBuffer buf16, UnsafeBuffer buf8) {
         a.beginRow();
         a.setLong(0, r);
         a.setBool(1, (r & 1) == 0);

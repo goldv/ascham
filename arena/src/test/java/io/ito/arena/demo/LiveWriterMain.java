@@ -5,6 +5,7 @@ import io.ito.arena.rotate.RotatingWriter;
 import io.ito.arena.rotate.SegmentDirectory;
 import io.ito.arena.schema.ArenaSchema;
 import io.ito.arena.schema.MetadataKeys;
+import io.ito.arena.write.Appender;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Clock;
@@ -38,6 +39,7 @@ public final class LiveWriterMain {
         RotatingWriter writer = RotatingWriter.open(dir, quotesSchema(table), 4096, epoch,
                 new DailyRotationPolicy(), Clock.systemUTC(), new SystemEpochNanoClock());
 
+        Appender appender = writer.appender();
         String[] symbols = {"AAPL", "MSFT", "GOOG", "AMZN", "NVDA"};
         UnsafeBuffer[] symBuf = new UnsafeBuffer[symbols.length];
         int[] symLen = new int[symbols.length];
@@ -58,17 +60,11 @@ public final class LiveWriterMain {
             long ts = clock.nanoTime();
             int s = (int) (g % symbols.length);
             long px = 1_000_000L + Math.round(Math.sin(g / 50.0) * 50_000L) + s * 10_000L;  // scaled 1e-4
-            UnsafeBuffer sb = symBuf[s];
-            int sl = symLen[s];
-            // The append lambda captures only per-iteration final values, so a rotation re-invoking it
-            // re-writes the identical row (RotatingWriter's side-effect-free contract).
-            writer.append(a -> {
-                a.beginRow();
-                a.setLong(0, ts);
-                a.setBytes(1, sb, 0, sl);
-                a.setLong(2, px);
-                a.endRow();
-            });
+            appender.beginRow();
+            appender.setLong(0, ts);
+            appender.setBytes(1, symBuf[s], 0, symLen[s]);
+            appender.setLong(2, px);
+            appender.endRow();
             g++;
             long now = System.currentTimeMillis();
             if (now - lastHeartbeat >= 100) {

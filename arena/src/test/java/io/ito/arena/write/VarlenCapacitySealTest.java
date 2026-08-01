@@ -25,7 +25,7 @@ class VarlenCapacitySealTest {
 
         try (SegmentWriter writer = SegmentWriter.createSegment(
                 path, schema, 8, 1L, 1L, new WriterFixtures.FakeClock(0, 1))) {
-            GenericAppender a = writer.genericAppender();
+            Appender a = writer.appender();
 
             // Row 0 fills the varlen buffer exactly (16 bytes).
             a.beginRow();
@@ -72,7 +72,7 @@ class VarlenCapacitySealTest {
 
         try (SegmentWriter writer = SegmentWriter.createSegment(
                 path, schema, 8, 1L, 1L, new WriterFixtures.FakeClock(0, 1))) {
-            GenericAppender a = writer.genericAppender();
+            Appender a = writer.appender();
             a.beginRow();
             a.setLong(TS, 1000);
             a.setLong(I64, 1);

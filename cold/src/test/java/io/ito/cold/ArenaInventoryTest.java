@@ -47,8 +47,8 @@ class ArenaInventoryTest {
                 new DailyRotationPolicy(),
                 new ColdFixtures.MutableClock(D1.atStartOfDay(ZoneOffset.UTC).toInstant()),
                 ColdFixtures.counterNanoClock())) {
-            writer.append(ColdFixtures.row(
-                    D1.atStartOfDay(ZoneOffset.UTC).toInstant().getEpochSecond() * 1_000_000_000L, "AAPL", 1));
+            ColdFixtures.append(writer,
+                    D1.atStartOfDay(ZoneOffset.UTC).toInstant().getEpochSecond() * 1_000_000_000L, "AAPL", 1);
         }
 
         List<ArenaInventory.DaySegments> pending = ArenaInventory.pendingDays(dir, D2);
@@ -87,8 +87,8 @@ class ArenaInventoryTest {
                 new DailyRotationPolicy(),
                 new ColdFixtures.MutableClock(D1.atStartOfDay(ZoneOffset.UTC).toInstant()),
                 ColdFixtures.counterNanoClock())) {
-            writer.append(ColdFixtures.row(
-                    D1.atStartOfDay(ZoneOffset.UTC).toInstant().getEpochSecond() * 1_000_000_000L, "AAPL", 1));
+            ColdFixtures.append(writer,
+                    D1.atStartOfDay(ZoneOffset.UTC).toInstant().getEpochSecond() * 1_000_000_000L, "AAPL", 1);
 
             ArenaInventory.DaySegments day = ArenaInventory.pendingDays(dir, D2).get(0);
             // Heartbeat on another thread while the probe watches: the writer is demonstrably alive,
@@ -131,11 +131,11 @@ class ArenaInventoryTest {
                 new DailyRotationPolicy(),
                 new ColdFixtures.MutableClock(D1.atStartOfDay(ZoneOffset.UTC).toInstant()),
                 ColdFixtures.counterNanoClock())) {
-            writer.append(ColdFixtures.row(d1Start + 1_000L, "AAPL", 1));
+            ColdFixtures.append(writer, d1Start + 1_000L, "AAPL", 1);
             // A straggler whose event time lands on the next day, while the file day stays D1. This
             // is exactly the skew that would desynchronise the partition from the watermark (§3.1).
-            writer.append(ColdFixtures.row(
-                    D2.atStartOfDay(ZoneOffset.UTC).toInstant().getEpochSecond() * 1_000_000_000L + 5, "MSFT", 2));
+            ColdFixtures.append(writer,
+                    D2.atStartOfDay(ZoneOffset.UTC).toInstant().getEpochSecond() * 1_000_000_000L + 5, "MSFT", 2);
         }
 
         ArenaInventory.DaySegments day = ArenaInventory.pendingDays(dir, D3).get(0);
@@ -152,7 +152,7 @@ class ArenaInventoryTest {
                 new DailyRotationPolicy(),
                 new ColdFixtures.MutableClock(D1.atStartOfDay(ZoneOffset.UTC).toInstant()),
                 ColdFixtures.counterNanoClock());
-        writer.append(ColdFixtures.row(d1Start + 1_000L, "AAPL", 1));
+        ColdFixtures.append(writer, d1Start + 1_000L, "AAPL", 1);
         // Deliberately NOT closed: the batch stays in progress with unpublished stats, which is what
         // a crashed writer leaves behind. Verification must refuse to trust it.
         try {

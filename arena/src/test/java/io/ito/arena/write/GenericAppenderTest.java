@@ -26,7 +26,7 @@ class GenericAppenderTest {
 
         try (SegmentWriter writer = SegmentWriter.createSegment(
                 path, schema, 4, 42L, 1L, new WriterFixtures.FakeClock(start, 1000))) {
-            GenericAppender a = writer.genericAppender();
+            Appender a = writer.appender();
 
             for (int r = 0; r < 3; r++) {
                 a.beginRow();

@@ -41,7 +41,7 @@ class SchemaHashMismatchTest {
         Path path = dir.resolve("seg.arena");
         try (SegmentWriter writer = SegmentWriter.createSegment(
                 path, schema, 4, 1L, 1L, new ReaderFixtures.FakeClock(0, 1))) {
-            var a = writer.genericAppender();
+            var a = writer.appender();
             a.beginRow();
             a.setLong(0, 1000);
             a.setLong(1, 1);

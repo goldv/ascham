@@ -7,7 +7,7 @@ import io.ito.arena.read.Snapshot;
 import io.ito.arena.read.SnapshotReader;
 import io.ito.arena.schema.ArenaSchema;
 import io.ito.arena.schema.MetadataKeys;
-import io.ito.arena.write.GenericAppender;
+import io.ito.arena.write.Appender;
 import io.ito.arena.write.SegmentWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -76,7 +76,7 @@ class SoakTest {
 
         Thread writerThread = new Thread(() -> {
             try (writer) {
-                GenericAppender a = writer.genericAppender();
+                Appender a = writer.appender();
                 long g = 0;
                 while (System.nanoTime() < deadline && g < (long) MAX_BATCHES * BATCH_ROWS - BATCH_ROWS) {
                     a.beginRow();
