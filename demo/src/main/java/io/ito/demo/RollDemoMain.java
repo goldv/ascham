@@ -1,35 +1,33 @@
 package io.ito.demo;
 
 import io.ito.cold.ColdConfig;
-import io.ito.cold.DuckDbRollExecutor;
+import io.ito.cold.IcebergRollExecutor;
 import io.ito.cold.RollService;
 import java.nio.file.Path;
-import java.time.Duration;
 
 /**
- * Rolls whatever the demo writer has produced into the Iceberg catalog and reports what moved —
+ * Rolls whatever the demo writer has produced into an Iceberg warehouse and reports what moved —
  * the cold tier end to end, on demo data.
  *
  * <pre>
- *   docker compose -f dev/docker-compose.yml up -d
  *   ./gradlew :demo:backfill --args="--days 3"
- *   ./gradlew :demo:roll
+ *   ./gradlew :demo:roll                                      # local warehouse under build/
+ *   ./gradlew :demo:roll --args="--dest http://localhost:8181/catalog"   # dev/ REST stack
  * </pre>
  *
- * <p>Runs with a zero grace period so one invocation completes the whole lifecycle — roll, then
- * reclaim — instead of leaving segments for a later pass. Production uses a real grace window
- * (default 15 minutes) so that in-flight queries whose cutover is still cached keep working.
+ * <p>Rolling only moves data; nothing is deleted from the arena. Reclamation of archived segments
+ * is a separate utility, driven by the provenance each roll commit records.
  */
 public final class RollDemoMain {
 
     private static final String USAGE = """
-            Rolls demo data from the arena into the Iceberg catalog.
+            Rolls demo data from the arena into an Iceberg warehouse.
 
-              --dir PATH        segment base directory (default /dev/shm/ito, else build/segments)
-              --extension PATH  arena DuckDB extension (default arena-duckdb/build/arena.duckdb_extension)
-              --catalog URL     Iceberg REST endpoint (default http://localhost:8181/catalog)
-              --warehouse NAME  warehouse name (default ito)
-              --grace-seconds N hold archived segments this long before reclaiming (default 0)
+              --dir PATH             segment base directory (default /dev/shm/ito, else build/segments)
+              --dest PATH|URL        local warehouse path, or Iceberg REST endpoint (http(s)://...)
+                                     (default build/warehouse — no services needed)
+              --warehouse NAME       REST warehouse name (default ito; unused for local paths)
+              --segments-per-file N  consecutive segments per rolled parquet file (default 1)
             """;
 
     public static void main(String[] args) {
@@ -39,23 +37,19 @@ public final class RollDemoMain {
         }
         DemoArgs options = DemoArgs.parse(args);
         Path dir = options.dir();
-        Path extension = Path.of(System.getProperty("io.ito.demo.arenaExtension",
-                "arena-duckdb/build/arena.duckdb_extension"));
 
         ColdConfig config = ColdConfig.builder()
                 .arenaBaseDir(dir)
-                .arenaExtension(extension)
-                .catalog("http://localhost:8181/catalog", "ito")
-                // The sort order travels with the data: DemoSchemas declares arena.sort_key on
-                // (sym, ts), so the roll writes files in that order without separate configuration.
-                .sortColumns(java.util.Map.of(
-                        "quotes", DemoSchemas.sortColumns(DemoSchemas.quotes(4096)),
-                        "trades", DemoSchemas.sortColumns(DemoSchemas.trades(4096))))
+                .destination(options.stringValue("dest", "build/warehouse"))
+                .warehouseName(options.stringValue("warehouse", "ito"))
+                .segmentsPerFile(options.segmentsPerFile())
+                // No sortColumns here: DemoSchemas declares arena.sort_key on (sym, ts), and the
+                // roll reads the order straight from the schema.
                 .build();
 
-        System.out.printf("rolling from %s into the Iceberg catalog%n", dir.toAbsolutePath());
-        try (DuckDbRollExecutor executor = new DuckDbRollExecutor(config)) {
-            RollService service = new RollService(config, executor, Duration.ZERO, 0);
+        System.out.printf("rolling from %s into %s%n", dir.toAbsolutePath(), config.destination());
+        try (IcebergRollExecutor executor = new IcebergRollExecutor(config)) {
+            RollService service = new RollService(config, executor, 0);
             RollService.Pass pass = service.runOnce();
 
             for (RollService.TableOutcome table : pass.tables()) {
@@ -63,14 +57,13 @@ public final class RollDemoMain {
                     System.out.printf("  %-8s FAILED: %s%n", table.table(), table.failure().getMessage());
                     continue;
                 }
-                System.out.printf("  %-8s rolled %d day(s), %,d rows; reclaimed %d segment(s)%n",
-                        table.table(), table.roll().rolled().size(), table.roll().totalRows(),
-                        table.reclaim().unlinked().size());
+                System.out.printf("  %-8s rolled %d day(s), %,d rows%n",
+                        table.table(), table.roll().rolled().size(), table.roll().totalRows());
                 table.roll().days().forEach(day ->
                         System.out.printf("      %s  %-14s %,d rows%n", day.day(), day.status(), day.rows()));
             }
-            System.out.printf("total: %,d rows rolled, %d segment(s) reclaimed, %,d bytes still in the arena%n",
-                    pass.rowsRolled(), pass.segmentsReclaimed(), pass.arenaBytes());
+            System.out.printf("total: %,d rows rolled, %,d bytes still in the arena%n",
+                    pass.rowsRolled(), pass.arenaBytes());
             if (!pass.failures().isEmpty()) {
                 System.exit(1);
             }

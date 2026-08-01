@@ -1,4 +1,4 @@
-rootProject.name = "ito-db"
+rootProject.name = "ascham"
 
 dependencyResolutionManagement {
     repositories {

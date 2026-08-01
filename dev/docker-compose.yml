@@ -67,7 +67,10 @@ services:
       LAKEKEEPER__PG_ENCRYPTION_KEY: "dev-only-not-secure"
       LAKEKEEPER__PG_DATABASE_URL_READ: "postgresql://postgres:postgres@db:5432/postgres"
       LAKEKEEPER__PG_DATABASE_URL_WRITE: "postgresql://postgres:postgres@db:5432/postgres"
-      LAKEKEEPER__BASE_URI: "http://lakekeeper:8181"
+      # Advertised to catalog clients in /v1/config `overrides.uri`, which the Iceberg Java REST
+      # client honours for every subsequent request — so, like S3_ENDPOINT below, it must be
+      # reachable from host clients AND containers. The docker0 gateway is; `lakekeeper` is not.
+      LAKEKEEPER__BASE_URI: "${ITO_CATALOG_URI:-http://172.17.0.1:8181}"
       RUST_LOG: "info"
 
   lakekeeper:

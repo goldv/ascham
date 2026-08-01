@@ -1,52 +1,61 @@
 package io.ito.cold;
 
+import io.ito.arena.schema.ArenaSchema;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.TreeMap;
 
 /**
- * Everything the cold tier needs to roll a table: where the arena lives, how to reach the Iceberg
- * catalog, and the knobs that shape the written files.
+ * Everything the cold tier needs to roll a table: where the arena lives, where the historical data
+ * goes, and the knobs that shape the written files.
  *
- * <p>Built with {@link #builder()}; only {@code arenaBaseDir} and the catalog coordinates have no
- * sensible default.
+ * <p>The destination is one string and it decides the catalog: a local path or {@code file://} URI
+ * rolls straight to disk through a serverless Hadoop catalog, an {@code http(s)://} URI is an
+ * Iceberg REST catalog endpoint (object storage comes from the catalog's warehouse, e.g. S3). A
+ * bare {@code s3://} warehouse is rejected — Hadoop-catalog commits are not atomic on object
+ * stores; S3 data goes through a REST catalog.
+ *
+ * <p>Built with {@link #builder()}; only {@code arenaBaseDir} and {@code destination} have no
+ * default.
  */
 public final class ColdConfig {
 
     private final Path arenaBaseDir;
-    private final Path arenaExtension;
-    private final String catalogEndpoint;
-    private final String warehouse;
-    private final String catalogAlias;
+    private final String destination;
+    private final String warehouseName;
     private final String namespace;
-    private final String metaNamespace;
-    private final String rollLogTable;
     private final S3Credentials s3;
     private final Map<String, List<String>> sortColumns;
-    private final String memoryLimit;
-    private final Path tempDirectory;
+    private final Map<String, String> catalogProperties;
+    private final int segmentsPerFile;
+    private final long targetFileSizeBytes;
     private final Duration livenessProbe;
 
-    /** S3-compatible object-store credentials for the client-side secret; may be absent when the
-     *  catalog vends credentials (the dev stack does — see dev/README.md). */
+    /** S3-compatible object-store credentials, mapped to S3FileIO properties; may be absent when
+     *  the catalog vends credentials (the dev stack does — see dev/README.md). */
     public record S3Credentials(String endpoint, String keyId, String secret, boolean useSsl, boolean pathStyle) {
     }
 
     private ColdConfig(Builder b) {
         this.arenaBaseDir = Objects.requireNonNull(b.arenaBaseDir, "arenaBaseDir");
-        this.arenaExtension = Objects.requireNonNull(b.arenaExtension, "arenaExtension");
-        this.catalogEndpoint = Objects.requireNonNull(b.catalogEndpoint, "catalogEndpoint");
-        this.warehouse = Objects.requireNonNull(b.warehouse, "warehouse");
-        this.catalogAlias = b.catalogAlias;
+        this.destination = Objects.requireNonNull(b.destination, "destination");
+        this.warehouseName = b.warehouseName;
         this.namespace = b.namespace;
-        this.metaNamespace = b.metaNamespace;
-        this.rollLogTable = b.rollLogTable;
         this.s3 = b.s3;
         this.sortColumns = Map.copyOf(b.sortColumns);
-        this.memoryLimit = b.memoryLimit;
-        this.tempDirectory = b.tempDirectory;
+        this.catalogProperties = Map.copyOf(b.catalogProperties);
+        if (b.segmentsPerFile < 1) {
+            throw new IllegalArgumentException("segmentsPerFile must be >= 1, got " + b.segmentsPerFile);
+        }
+        this.segmentsPerFile = b.segmentsPerFile;
+        if (b.targetFileSizeBytes < 1) {
+            throw new IllegalArgumentException("targetFileSizeBytes must be positive");
+        }
+        this.targetFileSizeBytes = b.targetFileSizeBytes;
         this.livenessProbe = b.livenessProbe;
     }
 
@@ -54,21 +63,14 @@ public final class ColdConfig {
         return arenaBaseDir;
     }
 
-    public Path arenaExtension() {
-        return arenaExtension;
+    /** Local warehouse path, {@code file://} URI, or {@code http(s)://} REST catalog endpoint. */
+    public String destination() {
+        return destination;
     }
 
-    public String catalogEndpoint() {
-        return catalogEndpoint;
-    }
-
-    public String warehouse() {
-        return warehouse;
-    }
-
-    /** Local alias the catalog is ATTACHed under (default {@code hist}). */
-    public String catalogAlias() {
-        return catalogAlias;
+    /** Warehouse name sent to a REST catalog (default {@code ito}); unused for local paths. */
+    public String warehouseName() {
+        return warehouseName;
     }
 
     /** Namespace holding the rolled tables (default {@code ito}). */
@@ -76,36 +78,48 @@ public final class ColdConfig {
         return namespace;
     }
 
-    /** Namespace holding the roll log (default {@code ito_meta}). */
-    public String metaNamespace() {
-        return metaNamespace;
-    }
-
-    public String rollLogTable() {
-        return rollLogTable;
-    }
-
     public S3Credentials s3() {
         return s3;
     }
 
+    /** Extra Iceberg catalog properties, applied last — the escape hatch for anything the typed
+     *  surface does not cover. */
+    public Map<String, String> catalogProperties() {
+        return catalogProperties;
+    }
+
+    /**
+     * Consecutive same-day segments per rolled parquet file. Segments are the file-size dial: at
+     * ~115 MB per segment, 2 gives ~230 MB files — the docs' 128–512 MB guidance scales with this
+     * and the segment capacity.
+     */
+    public int segmentsPerFile() {
+        return segmentsPerFile;
+    }
+
+    /** Written as {@code write.target-file-size-bytes} on created tables (default 512 MB). Advisory
+     *  for engines that compact later; the roll's actual file size comes from segmentsPerFile. */
+    public long targetFileSizeBytes() {
+        return targetFileSizeBytes;
+    }
+
     /**
      * Columns each table's rolled files are sorted by, e.g. {@code quotes -> [sym, ts]}. Tables
-     * with no entry fall back to the arena {@code time_column} alone. Sorting is what gives Parquet
-     * min/max stats their kdb-parted-like symbol-skipping shape.
+     * with no configured entry fall back to the schema's own {@code arena.sort_key} declaration,
+     * then to the arena {@code time_column} alone. Sorting is what gives Parquet min/max stats
+     * their kdb-parted-like symbol-skipping shape.
      */
-    public List<String> sortColumnsFor(String table, String timeColumn) {
-        return sortColumns.getOrDefault(table, List.of(timeColumn));
-    }
-
-    /** DuckDB {@code memory_limit} for the roll session; the day sort spills beyond it. */
-    public String memoryLimit() {
-        return memoryLimit;
-    }
-
-    /** DuckDB {@code temp_directory} — where the external sort spills. Null leaves the default. */
-    public Path tempDirectory() {
-        return tempDirectory;
+    public List<String> sortColumnsFor(String table, ArenaSchema schema) {
+        List<String> configured = sortColumns.get(table);
+        if (configured != null) {
+            return configured;
+        }
+        TreeMap<Integer, String> byKey = new TreeMap<>();
+        schema.columns().forEach(c -> c.sortKey().ifPresent(k -> byKey.put(k, c.name())));
+        if (!byKey.isEmpty()) {
+            return List.copyOf(new ArrayList<>(byKey.values()));
+        }
+        return List.of(schema.metadata().timeColumn());
     }
 
     /**
@@ -117,12 +131,10 @@ public final class ColdConfig {
         return livenessProbe;
     }
 
-    public String qualified(String table) {
-        return catalogAlias + "." + namespace + "." + table;
-    }
-
-    public String qualifiedRollLog() {
-        return catalogAlias + "." + metaNamespace + "." + rollLogTable;
+    /** The arena table directory segments are read from — recorded in the historical table so no
+     *  other arena can be confused with this one. */
+    public String arenaDirOf(String table) {
+        return arenaBaseDir.resolve(table).toAbsolutePath().normalize().toString();
     }
 
     public static Builder builder() {
@@ -131,17 +143,14 @@ public final class ColdConfig {
 
     public static final class Builder {
         private Path arenaBaseDir;
-        private Path arenaExtension;
-        private String catalogEndpoint;
-        private String warehouse;
-        private String catalogAlias = "hist";
+        private String destination;
+        private String warehouseName = "ito";
         private String namespace = "ito";
-        private String metaNamespace = "ito_meta";
-        private String rollLogTable = "roll_log";
         private S3Credentials s3;
         private Map<String, List<String>> sortColumns = Map.of();
-        private String memoryLimit = "2GB";
-        private Path tempDirectory;
+        private Map<String, String> catalogProperties = Map.of();
+        private int segmentsPerFile = 1;
+        private long targetFileSizeBytes = 512L << 20;
         private Duration livenessProbe = Duration.ofSeconds(5);
 
         public Builder arenaBaseDir(Path v) {
@@ -149,34 +158,18 @@ public final class ColdConfig {
             return this;
         }
 
-        public Builder arenaExtension(Path v) {
-            this.arenaExtension = v;
+        public Builder destination(String v) {
+            this.destination = v;
             return this;
         }
 
-        public Builder catalog(String endpoint, String warehouse) {
-            this.catalogEndpoint = endpoint;
-            this.warehouse = warehouse;
-            return this;
-        }
-
-        public Builder catalogAlias(String v) {
-            this.catalogAlias = v;
+        public Builder warehouseName(String v) {
+            this.warehouseName = v;
             return this;
         }
 
         public Builder namespace(String v) {
             this.namespace = v;
-            return this;
-        }
-
-        public Builder metaNamespace(String v) {
-            this.metaNamespace = v;
-            return this;
-        }
-
-        public Builder rollLogTable(String v) {
-            this.rollLogTable = v;
             return this;
         }
 
@@ -190,13 +183,18 @@ public final class ColdConfig {
             return this;
         }
 
-        public Builder memoryLimit(String v) {
-            this.memoryLimit = v;
+        public Builder catalogProperties(Map<String, String> v) {
+            this.catalogProperties = v;
             return this;
         }
 
-        public Builder tempDirectory(Path v) {
-            this.tempDirectory = v;
+        public Builder segmentsPerFile(int v) {
+            this.segmentsPerFile = v;
+            return this;
+        }
+
+        public Builder targetFileSizeBytes(long v) {
+            this.targetFileSizeBytes = v;
             return this;
         }
 

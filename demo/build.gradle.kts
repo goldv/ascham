@@ -46,15 +46,14 @@ tasks.register<JavaExec>("runWriter") {
     standardInput = System.`in`
 }
 
-/** Roll whatever the demo has written into the Iceberg catalog (needs the dev/ stack up). */
+/** Roll whatever the demo has written into an Iceberg warehouse. Defaults to a local warehouse
+ *  under build/; pass --args="--dest http://localhost:8181/catalog" to use the dev/ REST stack. */
 tasks.register<JavaExec>("roll") {
     group = "demo"
-    description = "Roll demo data from the arena into Iceberg, then reclaim the segments"
+    description = "Roll demo data from the arena into an Iceberg warehouse (local dir or REST)"
     mainClass = "io.ito.demo.RollDemoMain"
     classpath = sourceSets["main"].runtimeClasspath
     jvmArgs = demoJvmArgs
-    systemProperty("io.ito.demo.arenaExtension",
-        rootDir.resolve("arena-duckdb/build/arena.duckdb_extension").absolutePath)
 }
 
 /** Backfill completed past days so the cold-tier roll has something real to archive. */

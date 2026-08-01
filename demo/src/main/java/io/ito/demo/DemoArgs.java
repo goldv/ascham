@@ -93,6 +93,15 @@ final class DemoArgs {
         return intValue("seconds", 0);
     }
 
+    /** Consecutive segments per rolled parquet file — the cold tier's file-size dial. */
+    int segmentsPerFile() {
+        return intValue("segments-per-file", 1);
+    }
+
+    String stringValue(String key, String fallback) {
+        return values.getOrDefault(key, fallback);
+    }
+
     List<String> symbols() {
         String raw = values.get("symbols");
         if (raw == null) {

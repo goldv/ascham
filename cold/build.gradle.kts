@@ -9,15 +9,30 @@ java {
 }
 
 dependencies {
-    // The arena reader: segment discovery, snapshots, and the batch zone maps the roller verifies
-    // day-alignment against. The roll itself reads through the DuckDB extension, not this API.
+    // The arena reader: segment discovery, snapshots, zero-copy batch roots, and the batch zone
+    // maps the roller verifies day-alignment against. The roll reads rows through this API.
     api(project(":arena"))
-    // The roll engine: one embedded DuckDB does read + sort + Parquet encode + Iceberg commit.
-    implementation(libs.duckdb.jdbc)
+    // The roll engine: native Iceberg table create/write/commit, parquet encoding via iceberg-data.
+    implementation(libs.iceberg.core)
+    implementation(libs.iceberg.parquet)
+    implementation(libs.iceberg.data)
+    // Compile-time only: MessageType appears in Parquet.writeData's createWriterFunc signature but
+    // iceberg-parquet's module metadata keeps parquet-column off the consumer compile classpath.
+    compileOnly(libs.parquet.column)
+    testCompileOnly(libs.parquet.column)
+    // S3FileIO properties for REST-vended object storage; the bundle carries the AWS SDK v2.
+    implementation(libs.iceberg.aws)
+    runtimeOnly(libs.iceberg.aws.bundle)
+    // Shaded Hadoop pair: Configuration/FileSystem for HadoopCatalog and parquet-hadoop's
+    // `provided` dependencies. Deliberately not full hadoop-common.
+    implementation(libs.hadoop.client.api)
+    runtimeOnly(libs.hadoop.client.runtime)
 
     testImplementation(platform(libs.junit.bom))
     testImplementation(libs.junit.jupiter)
     testImplementation(libs.assertj)
+    // RestCatalogIT reads back through DuckDB's iceberg extension to pin query-side parity.
+    testImplementation(libs.duckdb.jdbc)
     testRuntimeOnly(libs.junit.platform.launcher)
 }
 
@@ -31,8 +46,9 @@ val arenaJvmArgs = listOf(
 
 tasks.test {
     useJUnitPlatform {
-        // Integration tests need the dev catalog stack (dev/docker-compose.yml) and the built arena
-        // extension; they are opt-in via `gradlew :cold:rollIT`.
+        // Integration tests need the dev catalog stack (dev/docker-compose.yml); they are opt-in
+        // via `gradlew :cold:rollIT`. Everything else — including the full roll against a local
+        // filesystem warehouse — runs hermetically here.
         excludeTags("catalog")
     }
     jvmArgs(arenaJvmArgs)
@@ -40,7 +56,6 @@ tasks.test {
 
 // Integration tests against the local Lakekeeper/MinIO stack.
 //   docker compose -f dev/docker-compose.yml up -d
-//   DUCKDB=/path/to/duckdb arena-duckdb/scripts/build_extension.sh
 //   ./gradlew :cold:rollIT
 tasks.register<Test>("rollIT") {
     group = "verification"
@@ -49,7 +64,5 @@ tasks.register<Test>("rollIT") {
     classpath = sourceSets["test"].runtimeClasspath
     useJUnitPlatform { includeTags("catalog") }
     jvmArgs(arenaJvmArgs)
-    systemProperty("io.ito.cold.arenaExtension",
-        rootDir.resolve("arena-duckdb/build/arena.duckdb_extension").absolutePath)
     outputs.upToDateWhen { false } // always re-run: the catalog is external state
 }

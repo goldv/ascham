@@ -3,7 +3,6 @@ package io.ito.cold;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import io.ito.arena.rotate.SegmentDirectory;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -22,7 +21,6 @@ class RollServiceTest {
     private static final LocalDate D2 = LocalDate.of(2026, 7, 26);
     private static final LocalDate D3 = LocalDate.of(2026, 7, 27);
     private static final LocalDate D4 = LocalDate.of(2026, 7, 28);
-    private static final Duration GRACE = Duration.ofMinutes(15);
 
     @Test
     void aMultiDayBacklogDrainsOldestFirstInOneRun() {
@@ -55,22 +53,37 @@ class RollServiceTest {
     }
 
     @Test
-    void aDayRolledFromAnotherArenaFailsLoudlyRatherThanSilentlySkipping() {
-        // A roll-log entry written by a *different* arena must not be mistaken for "this day is
-        // done". Skipping would strand this arena's rows forever — never archived, never reclaimed,
+    void daysAtOrBelowTheWatermarkAreNotRolledAgain() {
+        ColdFixtures.writeDays(base, List.of(D1, D2, D3), 10);
+        FakeRollExecutor executor = new FakeRollExecutor();
+        executor.seedRolledDay("quotes", D1);
+        executor.seedRolledDay("quotes", D2);
+
+        TableRoller.RollResult result = new TableRoller(config(), executor).roll("quotes", D4);
+
+        assertThat(result.days()).extracting(TableRoller.DayResult::status).containsExactly(
+                TableRoller.DayStatus.ALREADY_ROLLED,
+                TableRoller.DayStatus.ALREADY_ROLLED,
+                TableRoller.DayStatus.ROLLED);
+        assertThat(executor.rollDayCalls()).containsExactly("rollDay:quotes:" + D3);
+    }
+
+    @Test
+    void aTableOwnedByAnotherArenaFailsLoudlyRatherThanSilentlySkipping() {
+        // A historical table created by a *different* arena must not be mistaken for ours.
+        // Skipping would strand this arena's rows forever — never archived, never reclaimed,
         // shared memory growing, and the only symptom "rolled 0 days". Found in the field: a demo
-        // roll against one arena blocked a completely separate arena's real data.
+        // roll against one arena blocked a completely separate arena's real data. The ownership
+        // check now happens at ensureTable, before any day is touched.
         ColdFixtures.writeDays(base, List.of(D1, D2), 10);
         FakeRollExecutor executor = new FakeRollExecutor();
-        executor.arenaDir = "/some/other/arena/quotes";
-        executor.logDayOnly("quotes", D1, 999, List.of("20260725.0.arena"));
+        executor.foreignArenaTable = "quotes";
 
         assertThatThrownBy(() -> new TableRoller(config(), executor).roll("quotes", D4))
                 .isInstanceOf(ColdException.class)
-                .hasMessageContaining("different arena")
-                .hasMessageContaining("/some/other/arena/quotes");
+                .hasMessageContaining("different arena");
 
-        // And it did not quietly roll the day on top of the foreign one, which would duplicate it.
+        // And it did not quietly roll a day on top of the foreign table, which would duplicate it.
         assertThat(executor.rollDayCalls()).isEmpty();
     }
 
@@ -80,7 +93,7 @@ class RollServiceTest {
         writeSecondTable("trades");
         FakeRollExecutor executor = new FakeRollExecutor();
 
-        RollService service = new RollService(config(), executor, GRACE, 0, clockAt(D4));
+        RollService service = new RollService(config(), executor, 0, clockAt(D4));
         assertThat(service.discoverTables()).containsExactly("quotes", "trades");
 
         RollService.Pass pass = service.runOnce();
@@ -97,7 +110,7 @@ class RollServiceTest {
         executor.failOnDay = D1; // only quotes fails; trades has the same days but must still drain
         executor.failOnTable = "quotes";
 
-        RollService.Pass pass = new RollService(config(), executor, GRACE, 0, clockAt(D4)).runOnce();
+        RollService.Pass pass = new RollService(config(), executor, 0, clockAt(D4)).runOnce();
 
         assertThat(pass.failures()).extracting(RollService.TableOutcome::table).containsExactly("quotes");
         // trades still rolled: containing the failure keeps one bad table from stalling the tier.
@@ -108,34 +121,29 @@ class RollServiceTest {
     }
 
     @Test
-    void aPassRollsThenReclaimsWithinTheSameRun() {
+    void aSecondPassIsANoOpBecauseTheWatermarkStands() {
         ColdFixtures.writeDays(base, List.of(D1, D2, D3), 10);
         FakeRollExecutor executor = new FakeRollExecutor();
-        RollService service = new RollService(config(), executor, GRACE, 0, clockAt(D4));
+        RollService service = new RollService(config(), executor, 0, clockAt(D4));
 
         RollService.Pass first = service.runOnce();
         assertThat(first.rowsRolled()).isPositive();
-        // Nothing is reclaimed yet — the days were archived moments ago.
-        assertThat(first.segmentsReclaimed()).isZero();
 
-        executor.nowMillis += GRACE.toMillis();
         RollService.Pass second = service.runOnce();
-
-        assertThat(second.rowsRolled()).isZero();          // nothing new to roll
-        assertThat(second.segmentsReclaimed()).isEqualTo(2); // D1 and D2 released
-        assertThat(new SegmentDirectory(base, "quotes").list()).hasSize(1);
+        assertThat(second.rowsRolled()).isZero(); // nothing new to roll, nothing rolled twice
+        assertThat(executor.rollDayCalls()).hasSize(3);
     }
 
     @Test
     void arenaBytesAreReportedForPressureMonitoring() {
         ColdFixtures.writeDays(base, List.of(D1, D2), 10);
-        RollService service = new RollService(config(), new FakeRollExecutor(), GRACE, 0, clockAt(D4));
+        RollService service = new RollService(config(), new FakeRollExecutor(), 0, clockAt(D4));
         assertThat(service.arenaBytes()).isPositive();
     }
 
     @Test
     void anEmptyArenaHasNoTables() {
-        RollService service = new RollService(config(), new FakeRollExecutor(), GRACE, 0, clockAt(D4));
+        RollService service = new RollService(config(), new FakeRollExecutor(), 0, clockAt(D4));
         assertThat(service.discoverTables()).isEmpty();
         assertThat(service.runOnce().tables()).isEmpty();
     }
@@ -148,7 +156,7 @@ class RollServiceTest {
         } catch (java.io.IOException e) {
             throw new AssertionError(e);
         }
-        RollService service = new RollService(config(), new FakeRollExecutor(), GRACE, 0, clockAt(D4));
+        RollService service = new RollService(config(), new FakeRollExecutor(), 0, clockAt(D4));
         assertThat(service.discoverTables()).containsExactly("quotes");
     }
 
@@ -176,8 +184,7 @@ class RollServiceTest {
     private ColdConfig config() {
         return ColdConfig.builder()
                 .arenaBaseDir(base)
-                .arenaExtension(Path.of("unused"))
-                .catalog("http://localhost:8181/catalog", "ito")
+                .destination(base.resolve("warehouse").toString())
                 .livenessProbe(Duration.ofMillis(50))
                 .build();
     }

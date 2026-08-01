@@ -22,8 +22,9 @@ import java.util.Optional;
  *       middle day would be excluded by both the historical and the realtime side of a query.</li>
  *   <li><b>I2 — day-alignment verified, not assumed.</b> A day's rows must actually fall inside that
  *       UTC day; a violation aborts the table rather than silently splitting it.</li>
- *   <li><b>I3 — reclamation is separate.</b> This class never deletes a segment. Unlinking is gated
- *       on the archive being durable and on a grace period, and lands in R5.</li>
+ *   <li><b>I3 — reclamation is separate.</b> This class never deletes a segment. Unlinking is a
+ *       standalone utility's job, gated on the archive being durable — the roll records segment
+ *       provenance in each commit's snapshot summary for it, and nothing more.</li>
  * </ul>
  *
  * <p>Rolling is idempotent. If a run dies part-way, the next one re-derives what to do from the
@@ -35,12 +36,10 @@ public final class TableRoller {
 
     /** What happened to one day. */
     public enum DayStatus {
-        /** Copied and logged by this run. */
+        /** Copied and committed by this run. */
         ROLLED,
-        /** Already logged by an earlier run; nothing to do. */
+        /** At or below the table's watermark — committed by an earlier run; nothing to do. */
         ALREADY_ROLLED,
-        /** Data was already committed but the log entry was missing; the log was repaired. */
-        LOG_REPAIRED,
         /** Not safe to archive yet (a writer may still be appending); a later run will retry. */
         NOT_FROZEN
     }
@@ -86,12 +85,15 @@ public final class TableRoller {
         }
 
         ArenaSchema schema = readSchema(pending.get(0).segments().get(0));
-        List<String> sortColumns = config.sortColumnsFor(table, schema.metadata().timeColumn());
+        List<String> sortColumns = config.sortColumnsFor(table, schema);
+        // Also verifies this arena owns the table — a foreign table aborts before any day is
+        // touched, rather than surfacing day by day as it did under the roll log.
         executor.ensureTable(table, schema, sortColumns);
+        Optional<LocalDate> watermark = executor.highestRolledDay(table);
 
         List<DayResult> results = new ArrayList<>();
         for (ArenaInventory.DaySegments day : pending) {
-            DayResult result = rollDay(table, schema, sortColumns, dir, day);
+            DayResult result = rollDay(table, schema, sortColumns, dir, day, watermark);
             results.add(result);
             if (result.status() == DayStatus.NOT_FROZEN) {
                 // I1: a day we cannot roll blocks every later day, or the watermark would jump over
@@ -106,42 +108,17 @@ public final class TableRoller {
     }
 
     private DayResult rollDay(String table, ArenaSchema schema, List<String> sortColumns,
-                              SegmentDirectory dir, ArenaInventory.DaySegments day) {
+                              SegmentDirectory dir, ArenaInventory.DaySegments day,
+                              Optional<LocalDate> watermark) {
         List<String> names = day.fileNames();
 
-        // Recovery branch 1: the log already records this day, so the roll completed. Whether the
-        // segments are still on disk is R5's problem, not a correctness question.
-        Optional<String> rolledBy = executor.rolledBy(table, day.day());
-        if (rolledBy.isPresent()) {
-            String owner = rolledBy.get();
-            String mine = config.arenaBaseDir().resolve(table).toAbsolutePath().normalize().toString();
-            if (owner != null && !owner.equals(mine)) {
-                // Someone else's day, not ours. Skipping it would silently strand this arena's rows
-                // — never archived, never reclaimed, memory growing with nothing but "rolled 0 days"
-                // to show for it. Rolling it anyway would duplicate the day in history. Neither is
-                // acceptable, so stop and make the operator resolve the collision.
-                throw new ColdException("table " + table + " day " + day.day()
-                        + " was already rolled from a different arena (" + owner + ", not " + mine
-                        + "). Two arenas must not share one catalog table: point this roller at a "
-                        + "different namespace, or clear that arena's roll-log entries and data.");
-            }
+        // At or below the watermark means the day is fully committed: a day's data files and the
+        // advanced watermark land in one atomic transaction, so "data committed but unrecorded"
+        // cannot exist and needs no repair branch. Whether the segments are still on disk is the
+        // reclaim utility's concern, not a correctness question.
+        if (watermark.isPresent() && !day.day().isAfter(watermark.get())) {
             LOG.log(System.Logger.Level.DEBUG, "table {0}: day {1} already rolled", table, day.day());
             return new DayResult(day.day(), DayStatus.ALREADY_ROLLED, 0, names);
-        }
-
-        String timeColumn = schema.metadata().timeColumn();
-
-        // Recovery branch 2: data is present but unlogged — a previous run died between committing
-        // the data and recording it. One INSERT is one Iceberg snapshot, so any row for the day means
-        // the whole day landed; repair the log rather than rolling it again (which would duplicate).
-        if (executor.hasDataFor(table, timeColumn, day.day())) {
-            long rows = executor.countDataFor(table, timeColumn, day.day());
-            LOG.log(System.Logger.Level.WARNING,
-                    "table {0}: day {1} has {2} committed rows but no roll-log entry — a previous run "
-                            + "died mid-commit; repairing the log instead of re-rolling",
-                    table, day.day(), rows);
-            executor.logDayOnly(table, day.day(), rows, names);
-            return new DayResult(day.day(), DayStatus.LOG_REPAIRED, rows, names);
         }
 
         // Only now does it matter whether the writer is finished with these segments.

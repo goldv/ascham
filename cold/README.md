@@ -4,20 +4,28 @@ The cold tier: rolls completed days out of the shared-memory arena into Parquet 
 Iceberg catalog — the kdb rdb→hdb write-down. Design:
 [`../docs/cold-tier-design-plan.md`](../docs/cold-tier-design-plan.md).
 
-One embedded DuckDB does the whole move: it reads the arena through the native `arena` extension
-(zero-copy over the mmap), sorts the day by `(sym, ts)`, encodes Parquet, and commits the Iceberg
-snapshot. Java only orchestrates — discovery, safety checks, ordering, recovery.
+The roll is pure Java on the native Iceberg API. Segments are read through their zero-copy Arrow
+roots (mmap, no copy), each file group is ordered by an index sort, rows stream through the Iceberg
+parquet writer, and one transaction commits the whole day. DuckDB is no longer involved in writing —
+it remains the query-side engine, and the dev stack verifies it can read everything the roll writes.
 
-## Status (R4–R5)
+The destination is one string: a local path (or `file://`) rolls straight to disk through a
+serverless Hadoop catalog — no services at all — while an `http(s)://` URI is an Iceberg REST
+catalog (the dev stack's Lakekeeper), which owns the object storage underneath. A bare `s3://`
+warehouse is rejected by design: Hadoop-catalog commits rename metadata files, which is not atomic
+on object stores; S3 data goes through a REST catalog.
+
+## Status
 
 | Piece | State |
 |---|---|
 | `TableRoller` — the roll protocol: discover → freeze check → verify → roll ascending | **Implemented & tested** |
 | `ArenaInventory` — pending days, the freeze check, I2 day-alignment verification | **Implemented & tested** |
-| `SegmentReclaimer` — grace-gated unlink; the only thing that deletes arena data | **Implemented & tested** |
+| `IcebergRollExecutor` — native table create, group write, atomic day commit + watermark | **Implemented & tested** |
+| `SegmentGroup` / `GroupSorter` — zero-copy group addressing, the index sort | **Implemented & tested** |
+| `IcebergTypes` — arena → Iceberg types, with the widening conversions | **Implemented & tested** |
 | `RollService` / `RollScheduler` — multi-table passes, pressure alert, scheduling + backoff | **Implemented & tested** |
-| `DuckDbRollExecutor` — DDL, the atomic data+watermark commit, recovery queries | **Implemented & tested** |
-| `TypeMapping` — arena → Iceberg types, with the widening casts | **Implemented & tested** |
+| Reclamation utility (unlink archived segments from recorded provenance) | Not started — see below |
 | Unified realtime + historical query surface | Not started (R6) |
 
 ## The protocol in one paragraph
@@ -25,30 +33,39 @@ snapshot. Java only orchestrates — discovery, safety checks, ordering, recover
 A day is rollable only when no writer can still append to it: either a newer segment exists (the
 normal case — the writer rotates at midnight even when idle), or the writer's heartbeat has stopped.
 Before copying, every batch's zone map is checked to prove the day's rows really fall inside that UTC
-day. The copy and the watermark row are written in **one transaction**, so the log can never claim a
-day the data does not have. Days are rolled **oldest first and the run stops at the first failure**,
-which is what lets a single "highest rolled day" stand in for the whole set.
+day. The day's parquet files, its segment provenance, and the advanced watermark are committed in
+**one atomic transaction**, so a partially-rolled day cannot exist — a crash mid-day commits nothing
+and the next run simply rolls the day again. Days are rolled **oldest first and the run stops at the
+first failure**, which is what lets a single watermark stand in for the whole set.
 
-Rolling is idempotent — a run that dies part-way leaves nothing to reconcile, because the next run
-re-derives what to do from the store itself:
+State lives in the table itself, in two places with two jobs:
 
-| State found | Action |
-|---|---|
-| Day is in the roll log | Nothing; it is done |
-| Data committed but no log entry (died mid-commit) | Repair the log — never re-copy, which would duplicate |
-| Neither | Roll it |
+| Where | What | Why it lives there |
+|---|---|---|
+| Table property `ito.rolled-through` | The watermark: highest fully-committed day | Correctness. Updated atomically with the data; survives snapshot expiration |
+| Table property `ito.arena-dir` | Which arena owns this table | Verified on every open — two arenas must never share a table |
+| Snapshot summary `ito.day` / `ito.segments` / `ito.arena-dir` / `ito.rows` | Which segment files fed each commit | Provenance for the reclaim utility (audit, not correctness) |
+
+## File sizing
+
+`segmentsPerFile` groups N consecutive same-day segments into one parquet file — the file-size
+dial. At ~115 MB segments, `2` gives ~230 MB files; scale N toward the 128–512 MB (up to 1 GB for
+very large tables) guidance. Each group is sorted by the table's sort columns (configured, or the
+schema's own `arena.sort_key` declaration, or the time column) via an index sort: only the sort-key
+columns are pulled onto the heap, the permutation is sorted, and rows stream out of the mmap in
+order — memory is bounded by one group's keys, not its data. Created tables also declare
+`write.target-file-size-bytes` and `write.parquet.compression-codec=zstd`.
 
 ## Usage
 
 ```java
 ColdConfig config = ColdConfig.builder()
         .arenaBaseDir(Path.of("/dev/shm/ito"))
-        .arenaExtension(Path.of("arena-duckdb/build/arena.duckdb_extension"))
-        .catalog("http://localhost:8181/catalog", "ito")
-        .sortColumns(Map.of("quotes", List.of("sym", "ts")))
-        .build();
+        .destination("/data/warehouse")            // or "http://localhost:8181/catalog"
+        .segmentsPerFile(2)
+        .build();                                  // sort order comes from arena.sort_key
 
-try (RollExecutor executor = new DuckDbRollExecutor(config)) {
+try (RollExecutor executor = new IcebergRollExecutor(config)) {
     TableRoller.RollResult result = new TableRoller(config, executor).roll("quotes");
     // result.rolled() — days copied by this run; result.totalRows() — rows written
 }
@@ -60,42 +77,39 @@ data covers everything before it, the arena serves everything from it onward.
 For a whole deployment, `RollService` does every table in one pass and `RollScheduler` runs it:
 
 ```java
-RollService service = new RollService(config, executor, Duration.ofMinutes(15), 8L << 30);
+RollService service = new RollService(config, executor, 8L << 30);
 try (RollScheduler scheduler = new RollScheduler(service, LocalTime.of(0, 15), Clock.systemUTC())) {
     scheduler.start();   // drains any backlog now, then runs daily at 00:15 UTC
 }
 ```
 
-## Reclamation
+## Reclamation (future utility)
 
-Segments are released only after their rows are durably in the historical store, and only via
-`SegmentReclaimer`. Three rules make that safe:
+The roll never deletes arena data — it only records, in every commit's snapshot summary, exactly
+which segment files it archived. A standalone utility (not yet written) will consume that
+provenance to unlink segments once the archive is durable. Two constraints it must honour:
 
-- **Only what the roll log names** — a segment is reclaimed because a committed archive row says it
-  was copied, never because it merely looks old. This is why the roll names its inputs explicitly
-  (`arena_scan([...])`) rather than re-listing the directory: the audit set and the reclaim set are
-  the same list.
-- **Only after grace** (default 15 min), measured against **the store's clock**, so a skewed roller
-  clock cannot shorten its own safety margin. Grace must comfortably exceed readers' cutover-cache
-  TTL, or a query could look for rows in an arena segment that just disappeared.
-- **Never the newest segment**, which a live writer may be appending to.
-
-Unlinking does not disturb in-flight readers: the kernel keeps an unlinked inode alive until the
-last mapping is dropped, so a query that opened before the unlink runs to completion. It only stops
-*new* readers.
+- **Consume summaries before expiring snapshots.** Snapshot expiration deletes summaries with the
+  snapshots; correctness does not care (the watermark is a table property), but the segment lists
+  do. Reclaim first, expire after.
+- **Orphan files are normal.** A run that dies between writing parquet and committing leaves
+  unreferenced files in the warehouse. They are invisible to the table; standard Iceberg
+  orphan-file removal collects them.
 
 ## Tests
 
 ```sh
-./gradlew :cold:test      # unit tests — no external services
-./gradlew :cold:rollIT    # integration: real rolls into the local Iceberg catalog
+./gradlew :cold:test      # the correctness suite — hermetic, includes full rolls to a local warehouse
+./gradlew :cold:rollIT    # integration: roll through Lakekeeper/MinIO, read back via DuckDB
 ```
 
-`rollIT` needs the dev stack up and the arena extension built:
+`rollIT` needs only the dev stack (no extension build):
 
 ```sh
 docker compose -f ../dev/docker-compose.yml up -d
-DUCKDB=/path/to/duckdb ../arena-duckdb/scripts/build_extension.sh
 ```
 
-Each integration test uses its own catalog namespace, so runs are independent and repeatable.
+Each integration run uses its own catalog namespace, so runs are independent and repeatable. The
+DuckDB read-back in `RestCatalogIT` is what pins "the query surface can read what the roll writes"
+— including nanosecond timestamps (stored as unzoned `timestamp_ns`, UTC by convention, because
+DuckDB has no zoned nanosecond type).

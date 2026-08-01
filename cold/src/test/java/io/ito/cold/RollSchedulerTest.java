@@ -70,7 +70,7 @@ class RollSchedulerTest {
     }
 
     private RollService service() {
-        return new RollService(config(), new FakeRollExecutor(), Duration.ofMinutes(15), 0);
+        return new RollService(config(), new FakeRollExecutor(), 0);
     }
 
     /** A pass that counts invocations and can report a persistent table failure. */
@@ -81,7 +81,6 @@ class RollSchedulerTest {
             if (fail) {
                 return new RollService.Pass(java.util.List.of(new RollService.TableOutcome("quotes",
                         new TableRoller.RollResult("quotes", java.util.List.of()),
-                        new SegmentReclaimer.Result("quotes", java.util.List.of(), 0),
                         new ColdException("catalog unreachable"))), 0);
             }
             return new RollService.Pass(java.util.List.of(), 0);
@@ -91,8 +90,7 @@ class RollSchedulerTest {
     private ColdConfig config() {
         return ColdConfig.builder()
                 .arenaBaseDir(base)
-                .arenaExtension(Path.of("unused"))
-                .catalog("http://localhost:8181/catalog", "ito")
+                .destination(base.resolve("warehouse").toString())
                 .build();
     }
 }

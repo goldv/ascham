@@ -11,9 +11,20 @@ jmh = "1.37"
 jmh-plugin = "0.7.3"
 jcstress = "0.16"
 jcstress-plugin = "0.9.0"
-# duckdb_jdbc: the cold tier's roll engine. Must match the DuckDB the arena extension is built
-# against (v1.5.5) — a loadable extension is rejected by a host of a different version.
+# duckdb_jdbc: query-side extension host and the cold IT read-back check. Must match the DuckDB
+# the arena extension is built against (v1.5.5) — a loadable extension is rejected by a host of a
+# different version. No longer the roll engine.
 duckdb = "1.5.5.0"
+# iceberg: the cold tier's roll engine — native table create/write/commit. 1.11 is the first
+# release with timestamp_ns/timestamptz_ns as native v3 types.
+iceberg = "1.11.0"
+# hadoop-client-api/runtime: the shaded pair satisfying parquet-hadoop's `provided` Hadoop deps
+# and providing Configuration/FileSystem for HadoopCatalog. Not the full hadoop-common sprawl.
+hadoop = "3.4.1"
+# parquet-column: compile-time only — iceberg-parquet's Gradle metadata keeps parquet off the
+# consumer compile classpath, but Parquet.writeData's createWriterFunc signature needs MessageType.
+# Must match the version iceberg-parquet resolves at runtime.
+parquet = "1.17.1"
 
 [libraries]
 agrona = { module = "org.agrona:agrona", version.ref = "agrona" }
@@ -30,6 +41,14 @@ jmh-annprocess = { module = "org.openjdk.jmh:jmh-generator-annprocess", version.
 
 jcstress-core = { module = "org.openjdk.jcstress:jcstress-core", version.ref = "jcstress" }
 duckdb-jdbc = { module = "org.duckdb:duckdb_jdbc", version.ref = "duckdb" }
+iceberg-core = { module = "org.apache.iceberg:iceberg-core", version.ref = "iceberg" }
+iceberg-parquet = { module = "org.apache.iceberg:iceberg-parquet", version.ref = "iceberg" }
+iceberg-data = { module = "org.apache.iceberg:iceberg-data", version.ref = "iceberg" }
+iceberg-aws = { module = "org.apache.iceberg:iceberg-aws", version.ref = "iceberg" }
+iceberg-aws-bundle = { module = "org.apache.iceberg:iceberg-aws-bundle", version.ref = "iceberg" }
+hadoop-client-api = { module = "org.apache.hadoop:hadoop-client-api", version.ref = "hadoop" }
+hadoop-client-runtime = { module = "org.apache.hadoop:hadoop-client-runtime", version.ref = "hadoop" }
+parquet-column = { module = "org.apache.parquet:parquet-column", version.ref = "parquet" }
 
 [plugins]
 jmh = { id = "me.champeau.jmh", version.ref = "jmh-plugin" }

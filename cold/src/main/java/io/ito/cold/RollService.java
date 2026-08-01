@@ -5,7 +5,6 @@ import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
-import java.time.Duration;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
@@ -13,8 +12,9 @@ import java.util.List;
 import java.util.stream.Stream;
 
 /**
- * Drives the cold tier across every arena table: roll what is complete, then release what is safely
- * archived (docs/cold-tier-design-plan.md §4).
+ * Drives the cold tier across every arena table: roll what is complete
+ * (docs/cold-tier-design-plan.md §4). Reclamation of archived segments is deliberately not part of
+ * the pass — a standalone utility unlinks them from the provenance the roll records.
  *
  * <p>Pull-based by design — it asks the arena "which days are finished?" rather than reacting to
  * rotation events, so a run started at any time converges to the same place. That is what makes the
@@ -31,8 +31,7 @@ public final class RollService {
     private static final System.Logger LOG = System.getLogger(RollService.class.getName());
 
     /** What one table did in a pass. */
-    public record TableOutcome(String table, TableRoller.RollResult roll, SegmentReclaimer.Result reclaim,
-                               Throwable failure) {
+    public record TableOutcome(String table, TableRoller.RollResult roll, Throwable failure) {
         public boolean failed() {
             return failure != null;
         }
@@ -47,38 +46,31 @@ public final class RollService {
         public long rowsRolled() {
             return tables.stream().filter(t -> !t.failed()).mapToLong(t -> t.roll().totalRows()).sum();
         }
-
-        public long segmentsReclaimed() {
-            return tables.stream().filter(t -> !t.failed()).mapToLong(t -> t.reclaim().unlinked().size()).sum();
-        }
     }
 
     private final ColdConfig config;
     private final RollExecutor executor;
-    private final Duration unlinkGrace;
     private final long arenaBytesAlertThreshold;
     private final Clock clock;
 
-    public RollService(ColdConfig config, RollExecutor executor, Duration unlinkGrace,
-                       long arenaBytesAlertThreshold) {
-        this(config, executor, unlinkGrace, arenaBytesAlertThreshold, Clock.systemUTC());
+    public RollService(ColdConfig config, RollExecutor executor, long arenaBytesAlertThreshold) {
+        this(config, executor, arenaBytesAlertThreshold, Clock.systemUTC());
     }
 
     /**
      * @param clock supplies "today" — the boundary no day at or after may be rolled, since the
      *              writer still owns it. Injectable so a run can be pinned to a specific date.
      */
-    public RollService(ColdConfig config, RollExecutor executor, Duration unlinkGrace,
-                       long arenaBytesAlertThreshold, Clock clock) {
+    public RollService(ColdConfig config, RollExecutor executor, long arenaBytesAlertThreshold,
+                       Clock clock) {
         this.config = config;
         this.executor = executor;
-        this.unlinkGrace = unlinkGrace;
         this.arenaBytesAlertThreshold = arenaBytesAlertThreshold;
         this.clock = clock;
     }
 
     /**
-     * One full pass: every table rolled, then reclaimed. Never throws for a table-level failure —
+     * One full pass: every table rolled. Never throws for a table-level failure —
      * inspect {@link Pass#failures()}. Safe to call repeatedly; each run re-derives its work.
      */
     public Pass runOnce() {
@@ -103,19 +95,15 @@ public final class RollService {
         try {
             TableRoller.RollResult roll = new TableRoller(config, executor)
                     .roll(table, LocalDate.now(clock.withZone(ZoneOffset.UTC)));
-            SegmentReclaimer.Result reclaim = new SegmentReclaimer(config, executor, unlinkGrace).reclaim(table);
-            if (!roll.rolled().isEmpty() || !reclaim.isEmpty()) {
-                LOG.log(System.Logger.Level.INFO,
-                        "table {0}: rolled {1} day(s) ({2} rows), reclaimed {3} segment(s) ({4} bytes)",
-                        table, roll.rolled().size(), roll.totalRows(), reclaim.unlinked().size(),
-                        reclaim.bytesFreed());
+            if (!roll.rolled().isEmpty()) {
+                LOG.log(System.Logger.Level.INFO, "table {0}: rolled {1} day(s) ({2} rows)",
+                        table, roll.rolled().size(), roll.totalRows());
             }
-            return new TableOutcome(table, roll, reclaim, null);
+            return new TableOutcome(table, roll, null);
         } catch (RuntimeException e) {
             // Contained on purpose: a bad day in one table must not stop the others from draining.
             LOG.log(System.Logger.Level.ERROR, "table " + table + ": roll failed, will retry next run", e);
-            return new TableOutcome(table, new TableRoller.RollResult(table, List.of()),
-                    new SegmentReclaimer.Result(table, List.of(), 0), e);
+            return new TableOutcome(table, new TableRoller.RollResult(table, List.of()), e);
         }
     }
 
