@@ -1,0 +1,4 @@
+- iceberg segmentation should be driven from segment duration. So we may have multiple realtime segment files within say 1 day, but these will all land in a single parquet file. In order to size the segment, we would adjust the duration e.g. 4 hours, 12 hours 1 day etc
+- api and project structure consolidation. We should expose appender and tailer api's ( might be able to get inpiration from chronicle ). Need to decide how to incorporate reclaim and roll to iceberg. First thought is that these are external to the core appender/tailer api and are performed as admin tasks which the user can schedule
+- indexing. We should be able to quickly perform fast queries such as latest per key, latest n per key etc. This can be used to setup realtime visualisations, streaming pipelines etc. 
+- fast in process operation such as join, as of join etc. We should be able to setup streaming pipelines like a kdb rte
