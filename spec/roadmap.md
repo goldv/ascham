@@ -3,3 +3,4 @@
 - indexing. We should be able to quickly perform fast queries such as latest per key, latest n per key etc. This can be used to setup realtime visualisations, streaming pipelines etc. 
 - fast in process operation such as join, as of join etc. We should be able to setup streaming pipelines like a kdb rte. We should look at java arrow algorithms to implement lean fast versions of these. https://arrow.apache.org/java/current/algorithm.html
 - handling symbol types e.g. isin, cusip. Do we only need this in rdb and then just let iceberg use dictionary encoding available in parquet.
+- sorting in roll should use java arrow index sorts. Currently have hand rolled merge index sort
