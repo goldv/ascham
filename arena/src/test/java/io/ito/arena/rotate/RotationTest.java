@@ -25,7 +25,7 @@ class RotationTest {
         RotateFixtures.MutableClock clock = new RotateFixtures.MutableClock(Instant.parse("2026-07-28T10:00:00Z"));
 
         try (RotatingWriter writer = RotatingWriter.open(dir, schema, 8, 1L,
-                new DailyRotationPolicy(), clock, RotateFixtures.counterNanoClock())) {
+                RollCycle.DAILY, clock, RotateFixtures.counterNanoClock())) {
             RotateFixtures.append(writer, 1000, 1);
             RotateFixtures.append(writer, 1001, 2);
 
@@ -49,7 +49,7 @@ class RotationTest {
         RotateFixtures.MutableClock clock = new RotateFixtures.MutableClock(Instant.parse("2026-07-28T10:00:00Z"));
 
         try (RotatingWriter writer = RotatingWriter.open(dir, schema, 2, 1L,
-                new DailyRotationPolicy(), clock, RotateFixtures.counterNanoClock())) {
+                RollCycle.DAILY, clock, RotateFixtures.counterNanoClock())) {
             for (int r = 0; r < 5; r++) {
                 RotateFixtures.append(writer, 1000 + r, r);
             }
@@ -64,12 +64,47 @@ class RotationTest {
     }
 
     @Test
+    void subDayCycleRotatesAtTheIntervalBoundary() {
+        SegmentDirectory dir = new SegmentDirectory(base, "trades");
+        RotateFixtures.MutableClock clock = new RotateFixtures.MutableClock(Instant.parse("2026-07-28T03:00:00Z"));
+
+        try (RotatingWriter writer = RotatingWriter.open(dir, RotateFixtures.tsStats(64), 8, 1L,
+                RollCycle.parse("4h"), clock, RotateFixtures.counterNanoClock())) {
+            RotateFixtures.append(writer, 1000, 1);
+
+            clock.set(Instant.parse("2026-07-28T04:30:00Z")); // next 4h interval, same day
+            RotateFixtures.append(writer, 2000, 2);
+        }
+
+        assertThat(dir.list()).extracting(s -> s.path().getFileName().toString())
+                .containsExactly("20260728.0000.240m.0.arena", "20260728.0400.240m.0.arena");
+    }
+
+    @Test
+    void capacityRotationStaysInsideTheIntervalAndBumpsOnlyTheSequence() {
+        SegmentDirectory dir = new SegmentDirectory(base, "trades");
+        // maxBatches=2, batchRows=2 → a segment holds 4 rows before the 5th append overflows.
+        ArenaSchema schema = RotateFixtures.tsStats(2);
+        RotateFixtures.MutableClock clock = new RotateFixtures.MutableClock(Instant.parse("2026-07-28T05:00:00Z"));
+
+        try (RotatingWriter writer = RotatingWriter.open(dir, schema, 2, 1L,
+                RollCycle.parse("4h"), clock, RotateFixtures.counterNanoClock())) {
+            for (int r = 0; r < 5; r++) {
+                RotateFixtures.append(writer, 1000 + r, r);
+            }
+        }
+
+        assertThat(dir.list()).extracting(s -> s.path().getFileName().toString())
+                .containsExactly("20260728.0400.240m.0.arena", "20260728.0400.240m.1.arena");
+    }
+
+    @Test
     void heartbeatMidRowDefersRotationToNextBeginRow() {
         SegmentDirectory dir = new SegmentDirectory(base, "trades");
         RotateFixtures.MutableClock clock = new RotateFixtures.MutableClock(Instant.parse("2026-07-28T10:00:00Z"));
 
         try (RotatingWriter writer = RotatingWriter.open(dir, RotateFixtures.tsStats(64), 8, 1L,
-                new DailyRotationPolicy(), clock, RotateFixtures.counterNanoClock())) {
+                RollCycle.DAILY, clock, RotateFixtures.counterNanoClock())) {
             RotateFixtures.append(writer, 1000, 1);
             Appender a = writer.appender();
             a.beginRow();
@@ -95,7 +130,7 @@ class RotationTest {
         RotateFixtures.MutableClock clock = new RotateFixtures.MutableClock(Instant.parse("2026-07-28T10:00:00Z"));
 
         try (RotatingWriter writer = RotatingWriter.open(dir, RotateFixtures.tsStats(64), 8, 1L,
-                new DailyRotationPolicy(), clock, RotateFixtures.counterNanoClock())) {
+                RollCycle.DAILY, clock, RotateFixtures.counterNanoClock())) {
             Appender a = writer.appender();
             a.beginRow();
             assertThatThrownBy(writer::rotate)
@@ -116,7 +151,7 @@ class RotationTest {
         Path path;
 
         try (RotatingWriter writer = RotatingWriter.open(dir, RotateFixtures.tsStats(64), 8, 1L,
-                new DailyRotationPolicy(), clock, RotateFixtures.counterNanoClock())) {
+                RollCycle.DAILY, clock, RotateFixtures.counterNanoClock())) {
             RotateFixtures.append(writer, 1000, 1);
             path = writer.currentPath();
             Appender a = writer.appender();

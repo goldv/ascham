@@ -27,7 +27,8 @@ public final class RollDemoMain {
               --dest PATH|URL        local warehouse path, or Iceberg REST endpoint (http(s)://...)
                                      (default build/warehouse — no services needed)
               --warehouse NAME       REST warehouse name (default ito; unused for local paths)
-              --segments-per-file N  consecutive segments per rolled parquet file (default 1)
+              --max-segments-per-file N  cap on consecutive segments per rolled parquet file
+                                     (default 0 = no cap: one file per roll interval)
             """;
 
     public static void main(String[] args) {
@@ -42,7 +43,7 @@ public final class RollDemoMain {
                 .arenaBaseDir(dir)
                 .destination(options.stringValue("dest", "build/warehouse"))
                 .warehouseName(options.stringValue("warehouse", "ito"))
-                .segmentsPerFile(options.segmentsPerFile())
+                .maxSegmentsPerFile(options.maxSegmentsPerFile())
                 // No sortColumns here: DemoSchemas declares arena.sort_key on (sym, ts), and the
                 // roll reads the order straight from the schema.
                 .build();
@@ -57,10 +58,11 @@ public final class RollDemoMain {
                     System.out.printf("  %-8s FAILED: %s%n", table.table(), table.failure().getMessage());
                     continue;
                 }
-                System.out.printf("  %-8s rolled %d day(s), %,d rows%n",
+                System.out.printf("  %-8s rolled %d interval(s), %,d rows%n",
                         table.table(), table.roll().rolled().size(), table.roll().totalRows());
-                table.roll().days().forEach(day ->
-                        System.out.printf("      %s  %-14s %,d rows%n", day.day(), day.status(), day.rows()));
+                table.roll().intervals().forEach(interval ->
+                        System.out.printf("      [%s, %s)  %-14s %,d rows%n",
+                                interval.start(), interval.end(), interval.status(), interval.rows()));
             }
             System.out.printf("total: %,d rows rolled, %,d bytes still in the arena%n",
                     pass.rowsRolled(), pass.arenaBytes());

@@ -31,7 +31,7 @@ public final class ColdConfig {
     private final S3Credentials s3;
     private final Map<String, List<String>> sortColumns;
     private final Map<String, String> catalogProperties;
-    private final int segmentsPerFile;
+    private final int maxSegmentsPerFile;
     private final long targetFileSizeBytes;
     private final Duration livenessProbe;
 
@@ -48,10 +48,7 @@ public final class ColdConfig {
         this.s3 = b.s3;
         this.sortColumns = Map.copyOf(b.sortColumns);
         this.catalogProperties = Map.copyOf(b.catalogProperties);
-        if (b.segmentsPerFile < 1) {
-            throw new IllegalArgumentException("segmentsPerFile must be >= 1, got " + b.segmentsPerFile);
-        }
-        this.segmentsPerFile = b.segmentsPerFile;
+        this.maxSegmentsPerFile = b.maxSegmentsPerFile;
         if (b.targetFileSizeBytes < 1) {
             throw new IllegalArgumentException("targetFileSizeBytes must be positive");
         }
@@ -89,16 +86,19 @@ public final class ColdConfig {
     }
 
     /**
-     * Consecutive same-day segments per rolled parquet file. Segments are the file-size dial: at
-     * ~115 MB per segment, 2 gives ~230 MB files — the docs' 128–512 MB guidance scales with this
-     * and the segment capacity.
+     * Caps consecutive segments per rolled parquet file. Below 1 (the default, 0): no cap — all of
+     * an interval's segments land in one file, and files are sized by choosing the roll cycle. Set
+     * it when capacity rotation packs more segments into an interval than one parquet file should
+     * hold: at ~115 MB per segment, 2 gives ~230 MB files — the docs' 128–512 MB guidance scales
+     * with this and the segment capacity.
      */
-    public int segmentsPerFile() {
-        return segmentsPerFile;
+    public int maxSegmentsPerFile() {
+        return maxSegmentsPerFile;
     }
 
     /** Written as {@code write.target-file-size-bytes} on created tables (default 512 MB). Advisory
-     *  for engines that compact later; the roll's actual file size comes from segmentsPerFile. */
+     *  for engines that compact later; the roll's actual file size comes from the roll cycle and
+     *  maxSegmentsPerFile. */
     public long targetFileSizeBytes() {
         return targetFileSizeBytes;
     }
@@ -149,7 +149,7 @@ public final class ColdConfig {
         private S3Credentials s3;
         private Map<String, List<String>> sortColumns = Map.of();
         private Map<String, String> catalogProperties = Map.of();
-        private int segmentsPerFile = 1;
+        private int maxSegmentsPerFile; // 0: no cap — one parquet file per interval
         private long targetFileSizeBytes = 512L << 20;
         private Duration livenessProbe = Duration.ofSeconds(5);
 
@@ -188,8 +188,8 @@ public final class ColdConfig {
             return this;
         }
 
-        public Builder segmentsPerFile(int v) {
-            this.segmentsPerFile = v;
+        public Builder maxSegmentsPerFile(int v) {
+            this.maxSegmentsPerFile = v;
             return this;
         }
 

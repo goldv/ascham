@@ -1,5 +1,6 @@
 package io.ito.demo;
 
+import io.ito.arena.rotate.RollCycle;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -93,9 +94,15 @@ final class DemoArgs {
         return intValue("seconds", 0);
     }
 
-    /** Consecutive segments per rolled parquet file — the cold tier's file-size dial. */
-    int segmentsPerFile() {
-        return intValue("segments-per-file", 1);
+    /** Cap on consecutive segments per rolled parquet file; below 1 means one file per interval. */
+    int maxSegmentsPerFile() {
+        return intValue("max-segments-per-file", 0);
+    }
+
+    /** The writer's roll cycle — the duration of one segment interval (default 1d). */
+    RollCycle rollCycle() {
+        String raw = values.get("roll-cycle");
+        return raw == null ? RollCycle.DAILY : RollCycle.parse(raw);
     }
 
     String stringValue(String key, String fallback) {

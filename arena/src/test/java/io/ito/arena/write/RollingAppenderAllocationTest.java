@@ -4,7 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assumptions.assumeThat;
 
 import com.sun.management.ThreadMXBean;
-import io.ito.arena.rotate.DailyRotationPolicy;
+import io.ito.arena.rotate.RollCycle;
 import io.ito.arena.rotate.RotatingWriter;
 import io.ito.arena.rotate.SegmentDirectory;
 import io.ito.arena.schema.ArenaSchema;
@@ -40,7 +40,7 @@ class RollingAppenderAllocationTest {
         Clock clock = Clock.fixed(Instant.parse("2026-07-28T10:00:00Z"), ZoneOffset.UTC);
 
         try (RotatingWriter writer = RotatingWriter.open(new SegmentDirectory(dir, "alltypes"), schema,
-                1024, 1L, new DailyRotationPolicy(), clock, new WriterFixtures.FakeClock(0, 1))) {
+                1024, 1L, RollCycle.DAILY, clock, new WriterFixtures.FakeClock(0, 1))) {
             Appender a = writer.appender();
 
             // Warm up: JIT the append path and cross several seal boundaries.

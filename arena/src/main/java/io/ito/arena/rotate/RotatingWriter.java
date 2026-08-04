@@ -7,17 +7,16 @@ import io.ito.arena.write.SegmentRoller;
 import io.ito.arena.write.SegmentWriter;
 import java.nio.file.Path;
 import java.time.Clock;
-import java.time.LocalDate;
-import java.time.ZoneOffset;
+import java.time.Instant;
 import java.util.List;
 import org.agrona.concurrent.EpochNanoClock;
 
 /**
  * Drives a table's segment lifecycle: rows go through {@link #appender()}, which rotates on the
- * policy (time) or on capacity exhaustion; only if a {@link Retention} backstop is configured are
- * the oldest segments unlinked. Rotation is transparent to the producer: the appender always writes
- * into a live segment, exception-free, even when a row's varlen bytes overflow the last batch of a
- * segment (the partially-written row is adopted into the successor).
+ * roll-cycle boundary (time) or on capacity exhaustion; only if a {@link Retention} backstop is
+ * configured are the oldest segments unlinked. Rotation is transparent to the producer: the
+ * appender always writes into a live segment, exception-free, even when a row's varlen bytes
+ * overflow the last batch of a segment (the partially-written row is adopted into the successor).
  *
  * <p>Rotating closes only the writer's own mapping of the old segment, which seals its trailing
  * batch so the segment is left fully self-describing. Readers hold independent mappings and are
@@ -37,28 +36,27 @@ public final class RotatingWriter implements AutoCloseable {
     private final int maxBatches;
     private final long epoch;
     private final Retention retention;
-    private final RotationPolicy policy;
+    private final RollCycle cycle;
     private final Clock clock;
     private final EpochNanoClock nanoClock;
 
     private SegmentWriter current;
-    private LocalDate currentDay;
+    private Instant currentIntervalStart;
     private int currentSeq;
     private RollingAppender appender;
 
-    // Amortizes the per-row policy check to zero allocation: LocalDate/Context are rebuilt only
-    // when the clock crosses the day boundary (or on rotation), not on every beginRow.
-    private RotationPolicy.Context cachedContext;
-    private long nextDayBoundaryMillis;
+    // Amortizes the per-row rotation check to zero allocation: one long comparison against the
+    // interval-end boundary, recomputed only on rotation.
+    private long nextBoundaryMillis;
 
     private RotatingWriter(SegmentDirectory directory, ArenaSchema schema, int maxBatches, long epoch,
-                           Retention retention, RotationPolicy policy, Clock clock, EpochNanoClock nanoClock) {
+                           Retention retention, RollCycle cycle, Clock clock, EpochNanoClock nanoClock) {
         this.directory = directory;
         this.schema = schema;
         this.maxBatches = maxBatches;
         this.epoch = epoch;
         this.retention = retention;
-        this.policy = policy;
+        this.cycle = cycle;
         this.clock = clock;
         this.nanoClock = nanoClock;
     }
@@ -68,24 +66,24 @@ public final class RotatingWriter implements AutoCloseable {
      * ({@link Retention#none()}) — the default; see {@link Retention} for why.
      */
     public static RotatingWriter open(SegmentDirectory directory, ArenaSchema schema, int maxBatches,
-                                      long epoch, RotationPolicy policy,
+                                      long epoch, RollCycle cycle,
                                       Clock clock, EpochNanoClock nanoClock) {
-        return open(directory, schema, maxBatches, epoch, Retention.none(), policy, clock, nanoClock);
+        return open(directory, schema, maxBatches, epoch, Retention.none(), cycle, clock, nanoClock);
     }
 
     /**
-     * Opens (or resumes) a table for writing. The first segment is created for the current UTC day
-     * at the next free sequence number. On restart, pass a higher {@code epoch} (e.g.
+     * Opens (or resumes) a table for writing. The first segment is created for the current roll
+     * interval at the next free sequence number. On restart, pass a higher {@code epoch} (e.g.
      * {@code directory.latestEpoch()+1}) so readers can detect the new writer instance.
      */
     public static RotatingWriter open(SegmentDirectory directory, ArenaSchema schema, int maxBatches,
-                                      long epoch, Retention retention, RotationPolicy policy,
+                                      long epoch, Retention retention, RollCycle cycle,
                                       Clock clock, EpochNanoClock nanoClock) {
-        RotatingWriter w = new RotatingWriter(directory, schema, maxBatches, epoch, retention, policy, clock, nanoClock);
-        w.currentDay = today(clock);
-        w.currentSeq = directory.nextSeq(w.currentDay);
+        RotatingWriter w = new RotatingWriter(directory, schema, maxBatches, epoch, retention, cycle, clock, nanoClock);
+        w.currentIntervalStart = cycle.floor(clock.instant());
+        w.currentSeq = directory.nextSeq(w.currentIntervalStart, cycle);
         w.current = w.createSegment();
-        w.refreshDayCaches();
+        w.refreshBoundary();
         w.appender = new RollingAppender(w.new Roller());
         w.applyRetention();
         return w;
@@ -97,7 +95,7 @@ public final class RotatingWriter implements AutoCloseable {
     }
 
     /**
-     * Forces rotation to a new segment on the current day.
+     * Forces rotation to a new segment in the current roll interval.
      *
      * @throws IllegalStateException if a row is open — forced rotation mid-row has no sane
      *                               semantics (open-row adoption is reserved for capacity-forced rotation)
@@ -106,26 +104,27 @@ public final class RotatingWriter implements AutoCloseable {
         if (appender.rowOpen()) {
             throw new IllegalStateException("cannot force rotation mid-row; call endRow() first");
         }
-        rotate(today(clock));
+        rotateNow();
     }
 
     /**
-     * Advances the current segment's liveness heartbeat, rotating first if the policy has come due.
+     * Advances the current segment's liveness heartbeat, rotating first if the roll interval has
+     * ended.
      *
      * <p>The rotation check matters for quiet tables: rotation is otherwise only evaluated at
-     * {@code beginRow}, so a writer that is alive but idle across the day boundary would keep
-     * yesterday's segment open indefinitely. An archiver cannot roll that segment (a writer may
-     * still append to it), so yesterday's data would sit unarchived until the next row arrived.
-     * Heartbeating on a timer — which a live writer must do anyway — closes that window.
+     * {@code beginRow}, so a writer that is alive but idle across the interval boundary would keep
+     * the previous interval's segment open indefinitely. An archiver cannot roll that segment (a
+     * writer may still append to it), so the interval's data would sit unarchived until the next
+     * row arrived. Heartbeating on a timer — which a live writer must do anyway — closes that
+     * window.
      *
-     * <p>If a row is open, rotation is deferred (the heartbeat still bumps): the policy fires at
+     * <p>If a row is open, rotation is deferred (the heartbeat still bumps): the boundary fires at
      * the next {@code beginRow} instead. A quiet table has no open row, so the window above stays
      * closed.
      */
     public void heartbeat() {
-        LocalDate today = today(clock);
-        if (!appender.rowOpen() && policy.shouldRotate(new RotationPolicy.Context(currentDay, today))) {
-            rotate(today);
+        if (!appender.rowOpen() && clock.millis() >= nextBoundaryMillis) {
+            rotateNow();
         }
         current.heartbeat();
     }
@@ -135,7 +134,7 @@ public final class RotatingWriter implements AutoCloseable {
     }
 
     public Path currentPath() {
-        return directory.segmentPath(currentDay, currentSeq);
+        return directory.segmentPath(currentIntervalStart, cycle, currentSeq);
     }
 
     /**
@@ -162,21 +161,18 @@ public final class RotatingWriter implements AutoCloseable {
 
         @Override
         public boolean rotationDue() {
-            if (clock.millis() >= nextDayBoundaryMillis) {
-                cachedContext = new RotationPolicy.Context(currentDay, today(clock));
-            }
-            return policy.shouldRotate(cachedContext);
+            return clock.millis() >= nextBoundaryMillis;
         }
 
         @Override
         public SegmentWriter rotate() {
-            RotatingWriter.this.rotate(today(clock));
+            rotateNow();
             return current;
         }
 
         @Override
         public SegmentWriter openSuccessor() {
-            return RotatingWriter.this.openSuccessor(today(clock));
+            return RotatingWriter.this.openSuccessor();
         }
 
         @Override
@@ -186,9 +182,9 @@ public final class RotatingWriter implements AutoCloseable {
         }
     }
 
-    private void rotate(LocalDate today) {
+    private void rotateNow() {
         retireSegment(current);
-        openSuccessor(today);
+        openSuccessor();
         applyRetention();
     }
 
@@ -199,35 +195,36 @@ public final class RotatingWriter implements AutoCloseable {
         old.close(); // writer done with this segment; readers keep their own mappings
     }
 
-    private SegmentWriter openSuccessor(LocalDate today) {
-        LocalDate day;
+    private SegmentWriter openSuccessor() {
+        Instant nowStart = cycle.floor(clock.instant());
+        Instant start;
         int seq;
-        if (today.equals(currentDay)) {
-            day = currentDay;
+        if (nowStart.equals(currentIntervalStart)) {
+            start = currentIntervalStart; // capacity (or forced) rotation stays inside the interval
             seq = currentSeq + 1;
         } else {
-            day = today;
-            seq = directory.nextSeq(today);
+            start = nowStart;
+            seq = directory.nextSeq(nowStart, cycle);
         }
         // Bookkeeping commits only after the successor exists: if creation throws (disk/shm full),
         // the current segment — and any open row in it — is untouched and the producer can retry.
         SegmentWriter next = SegmentWriter.createSegment(
-                directory.segmentPath(day, seq), schema, maxBatches, epoch, seq, nanoClock);
+                directory.segmentPath(start, cycle, seq), schema, maxBatches, epoch, seq, nanoClock);
         current = next;
-        currentDay = day;
+        currentIntervalStart = start;
         currentSeq = seq;
-        refreshDayCaches();
+        refreshBoundary();
         return next;
     }
 
     private SegmentWriter createSegment() {
         return SegmentWriter.createSegment(
-                directory.segmentPath(currentDay, currentSeq), schema, maxBatches, epoch, currentSeq, nanoClock);
+                directory.segmentPath(currentIntervalStart, cycle, currentSeq), schema, maxBatches, epoch,
+                currentSeq, nanoClock);
     }
 
-    private void refreshDayCaches() {
-        cachedContext = new RotationPolicy.Context(currentDay, currentDay);
-        nextDayBoundaryMillis = currentDay.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli();
+    private void refreshBoundary() {
+        nextBoundaryMillis = cycle.end(currentIntervalStart).toEpochMilli();
     }
 
     private void applyRetention() {
@@ -246,9 +243,5 @@ public final class RotatingWriter implements AutoCloseable {
                     victim, retention.maxSegments());
             directory.unlink(victim);
         }
-    }
-
-    private static LocalDate today(Clock clock) {
-        return LocalDate.ofInstant(clock.instant(), ZoneOffset.UTC);
     }
 }

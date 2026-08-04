@@ -324,17 +324,20 @@ type via `VectorSchemaRoot`, nulls included), `PruneTest` (in-progress never pru
   frozen-snapshot stability. `smoke` (0.5 s) runs in the normal suite; `soak` is `@Tag("soak")`, run
   by the `soakTest` task (duration via `-Dio.ito.arena.soak.seconds`).
 
-**M5 — rotation + liveness.** `SegmentDirectory` (`<baseDir>/<table>/<yyyyMMdd>.<seq>.arena`;
-`/dev/shm/ito` in production) — naming, listing, `nextSeq`, `unlink` (= `shm_unlink`), and a header
-`readEpoch`/`latestEpoch`. `RotationPolicy` + `DailyRotationPolicy` (UTC day boundary).
-`LivenessMonitor` (reader-side) — `poll()` → `ALIVE`/`STALLED` off heartbeat staleness, `writerEpoch()`
-for restart detection, `inProgressRowCount()` for stuck detection.
+**M5 — rotation + liveness.** `SegmentDirectory` (`<baseDir>/<table>/<yyyyMMdd>.<seq>.arena` for
+the daily cycle, `<yyyyMMdd>.<HHmm>.<mins>m.<seq>.arena` for sub-day cycles; `/dev/shm/ito` in
+production) — naming, listing, `nextSeq`, `unlink` (= `shm_unlink`), and a header
+`readEpoch`/`latestEpoch`. `RollCycle` (a duration dividing 24h evenly; `DAILY` default) replaces
+the original `RotationPolicy`/`DailyRotationPolicy` pair — the cycle is encoded in segment names,
+so an off-grid pluggable policy would desynchronise names from data. `LivenessMonitor`
+(reader-side) — `poll()` → `ALIVE`/`STALLED` off heartbeat staleness, `writerEpoch()` for restart
+detection, `inProgressRowCount()` for stuck detection.
 
 **As built:** the append surface is `RotatingWriter.appender()` — a long-lived `RollingAppender`
 the producer drives directly (`beginRow` … setters … `endRow`); rotation is transparent and
-exception-free. Time-based rotation comes from the policy, checked at `beginRow` (with the
-`LocalDate`/`Context` construction cached to the day boundary, so the per-row check allocates
-nothing); **capacity rotation is automatic** — `beginRow` rotates when the catalog would fill
+exception-free. Time-based rotation is one long comparison against the interval-end boundary,
+checked at `beginRow` and `heartbeat` (allocation-free per row);
+**capacity rotation is automatic** — `beginRow` rotates when the catalog would fill
 (`BatchCursor.rowCountRotationDue`), and a mid-row varlen exhaustion in the last batch adopts the
 open row into the successor segment (`adoptOpenRowFrom`; the only case not predictable at
 `beginRow`). `SegmentFullException` survives solely as the raw single-segment `SegmentWriter`

@@ -33,6 +33,7 @@ public final class MarketDataWriterMain {
               --max-batches N        batches per segment (default 512)
               --seconds N            stop after N seconds (default 0 = run until Ctrl-C)
               --seed N               generator seed (default 42)
+              --roll-cycle D         segment roll cycle, e.g. 4h, 6h, 1d (default 1d)
             """;
 
     public static void main(String[] args) throws Exception {
@@ -58,7 +59,7 @@ public final class MarketDataWriterMain {
 
         try (MarketDataWriter writer = new MarketDataWriter(dir, symbols, options.batchRows(),
                 options.maxBatches(), options.seed(), options.quotesPerTrade(),
-                Clock.systemUTC(), nanoClock)) {
+                options.rollCycle(), Clock.systemUTC(), nanoClock)) {
 
             // Closing the writer seals the trailing batch of each segment, which is what lets the
             // cold tier archive it — so shutdown must run even on Ctrl-C.

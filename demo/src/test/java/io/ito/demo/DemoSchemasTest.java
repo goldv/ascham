@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import io.ito.arena.read.BatchView;
 import io.ito.arena.read.SnapshotReader;
+import io.ito.arena.rotate.RollCycle;
 import io.ito.arena.rotate.SegmentDirectory;
 import io.ito.arena.schema.ArenaSchema;
 import java.nio.file.Path;
@@ -57,7 +58,7 @@ class DemoSchemasTest {
         long dayStart = Instant.parse("2026-07-27T00:00:00Z").getEpochSecond() * 1_000_000_000L;
         FixedNanoClock nanoClock = new FixedNanoClock(dayStart);
         try (MarketDataWriter writer = new MarketDataWriter(base, MarketDataGenerator.DEFAULT_SYMBOLS,
-                256, 64, 42L, 10, fixedClock("2026-07-27T00:00:00Z"), nanoClock)) {
+                256, 64, 42L, 10, RollCycle.DAILY, fixedClock("2026-07-27T00:00:00Z"), nanoClock)) {
             for (int i = 0; i < 2_000; i++) {
                 nanoClock.set(dayStart + i * 1_000_000L);
                 writer.writeEvent(nanoClock.nanoTime());
@@ -87,7 +88,7 @@ class DemoSchemasTest {
         long dayStart = Instant.parse("2026-07-27T00:00:00Z").getEpochSecond() * 1_000_000_000L;
         FixedNanoClock nanoClock = new FixedNanoClock(dayStart);
         try (MarketDataWriter writer = new MarketDataWriter(base, MarketDataGenerator.DEFAULT_SYMBOLS,
-                256, 64, 1L, 4, fixedClock("2026-07-27T00:00:00Z"), nanoClock)) {
+                256, 64, 1L, 4, RollCycle.DAILY, fixedClock("2026-07-27T00:00:00Z"), nanoClock)) {
             for (int i = 0; i < 500; i++) {
                 nanoClock.set(dayStart + i * 1_000_000L);
                 writer.writeEvent(nanoClock.nanoTime());

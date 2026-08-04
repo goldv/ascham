@@ -1,6 +1,6 @@
 package io.ito.demo;
 
-import io.ito.arena.rotate.DailyRotationPolicy;
+import io.ito.arena.rotate.RollCycle;
 import io.ito.arena.rotate.RotatingWriter;
 import io.ito.arena.rotate.SegmentDirectory;
 import io.ito.arena.write.Appender;
@@ -29,16 +29,17 @@ public final class MarketDataWriter implements AutoCloseable {
     private final MarketDataGenerator generator;
 
     public MarketDataWriter(Path baseDir, List<String> symbols, int batchRows, int maxBatches,
-                            long seed, int quotesPerTrade, Clock clock, EpochNanoClock nanoClock) {
+                            long seed, int quotesPerTrade, RollCycle cycle, Clock clock,
+                            EpochNanoClock nanoClock) {
         this.generator = new MarketDataGenerator(symbols, seed, quotesPerTrade);
         SegmentDirectory quotesDir = new SegmentDirectory(baseDir, "quotes");
         SegmentDirectory tradesDir = new SegmentDirectory(baseDir, "trades");
         // A fresh epoch per process, so readers can tell this writer from a previous instance.
         long epoch = Math.max(quotesDir.latestEpoch().orElse(0), tradesDir.latestEpoch().orElse(0)) + 1;
         this.quotes = RotatingWriter.open(quotesDir, DemoSchemas.quotes(batchRows), maxBatches, epoch,
-                new DailyRotationPolicy(), clock, nanoClock);
+                cycle, clock, nanoClock);
         this.trades = RotatingWriter.open(tradesDir, DemoSchemas.trades(batchRows), maxBatches, epoch,
-                new DailyRotationPolicy(), clock, nanoClock);
+                cycle, clock, nanoClock);
         this.quoteAppender = quotes.appender();
         this.tradeAppender = trades.appender();
     }
@@ -80,7 +81,7 @@ public final class MarketDataWriter implements AutoCloseable {
         return false;
     }
 
-    /** Advances both tables' liveness heartbeats (and rotates if the day has turned). */
+    /** Advances both tables' liveness heartbeats (and rotates if the roll interval has turned). */
     public void heartbeat() {
         quotes.heartbeat();
         trades.heartbeat();

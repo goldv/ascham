@@ -30,7 +30,7 @@ class IdleRotationTest {
         RotateFixtures.MutableClock clock = new RotateFixtures.MutableClock(Instant.parse("2026-07-28T23:59:00Z"));
 
         try (RotatingWriter writer = RotatingWriter.open(dir, schema, 8, 1L,
-                new DailyRotationPolicy(), clock, RotateFixtures.counterNanoClock())) {
+                RollCycle.DAILY, clock, RotateFixtures.counterNanoClock())) {
             RotateFixtures.append(writer, 1000, 1);
             Path yesterday = writer.currentPath();
             assertThat(yesterday.getFileName()).hasToString("20260728.0.arena");
@@ -55,13 +55,35 @@ class IdleRotationTest {
     }
 
     @Test
+    void heartbeatRotatesAnIdleWriterAtTheSubDayIntervalBoundary() {
+        SegmentDirectory dir = new SegmentDirectory(base, "trades");
+        RotateFixtures.MutableClock clock = new RotateFixtures.MutableClock(Instant.parse("2026-07-28T07:59:00Z"));
+
+        try (RotatingWriter writer = RotatingWriter.open(dir, RotateFixtures.tsStats(64), 8, 1L,
+                RollCycle.parse("4h"), clock, RotateFixtures.counterNanoClock())) {
+            RotateFixtures.append(writer, 1000, 1);
+            assertThat(writer.currentPath().getFileName()).hasToString("20260728.0400.240m.0.arena");
+
+            writer.heartbeat();
+            assertThat(dir.list()).hasSize(1); // same interval: no rotation
+
+            clock.set(Instant.parse("2026-07-28T08:00:30Z")); // interval turns; producer is idle
+            writer.heartbeat();
+
+            assertThat(writer.currentPath().getFileName()).hasToString("20260728.0800.240m.0.arena");
+            assertThat(dir.list()).extracting(s -> s.path().getFileName().toString())
+                    .containsExactly("20260728.0400.240m.0.arena", "20260728.0800.240m.0.arena");
+        }
+    }
+
+    @Test
     void heartbeatStillAdvancesLivenessWhenNoRotationIsDue() {
         SegmentDirectory dir = new SegmentDirectory(base, "trades");
         ArenaSchema schema = RotateFixtures.tsStats(64);
         RotateFixtures.MutableClock clock = new RotateFixtures.MutableClock(Instant.parse("2026-07-28T10:00:00Z"));
 
         try (RotatingWriter writer = RotatingWriter.open(dir, schema, 8, 1L,
-                new DailyRotationPolicy(), clock, RotateFixtures.counterNanoClock())) {
+                RollCycle.DAILY, clock, RotateFixtures.counterNanoClock())) {
             RotateFixtures.append(writer, 1000, 1);
             Path path = writer.currentPath();
 

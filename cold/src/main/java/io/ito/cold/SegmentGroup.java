@@ -15,7 +15,7 @@ import org.apache.arrow.vector.VectorSchemaRoot;
  * batches' start offsets, and the underlying bytes stay in the mmap'd segments throughout.
  *
  * <p>Only sealed batches are included: the roll runs strictly after
- * {@link ArenaInventory#verifyDayAlignment}, which already rejects in-progress batches, so an
+ * {@link ArenaInventory#verifyIntervalAlignment}, which already rejects in-progress batches, so an
  * unsealed batch here means the protocol was bypassed and is a hard error. Zero-row batches are
  * skipped, matching that check's treatment.
  */
@@ -60,7 +60,7 @@ final class SegmentGroup implements AutoCloseable {
                     }
                     starts.add(Math.toIntExact(total));
                     total += batch.rowCount();
-                    // A group is bounded by segmentsPerFile × segment capacity, far below 2^31 rows;
+                    // A group is bounded by maxSegmentsPerFile × segment capacity, far below 2^31 rows;
                     // the guard keeps a misconfiguration from overflowing the index silently.
                     Math.toIntExact(total);
                     roots.add(batch.root());

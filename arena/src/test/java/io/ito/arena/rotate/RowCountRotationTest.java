@@ -26,7 +26,7 @@ class RowCountRotationTest {
         RotateFixtures.MutableClock clock = new RotateFixtures.MutableClock(Instant.parse("2026-07-28T10:00:00Z"));
 
         try (RotatingWriter writer = RotatingWriter.open(dir, schema, 2, 1L,
-                new DailyRotationPolicy(), clock, RotateFixtures.counterNanoClock())) {
+                RollCycle.DAILY, clock, RotateFixtures.counterNanoClock())) {
             for (int r = 0; r < 4; r++) {
                 RotateFixtures.append(writer, 1000 + r, r);
             }

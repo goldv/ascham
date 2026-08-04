@@ -22,6 +22,20 @@ timestamp type). The path-based `iceberg_scan(...)` remains read-only; writes re
 Sources: duckdb.org iceberg "Writing to Iceberg" docs; "New DuckDB-Iceberg Features in v1.5.3"
 (2026-05-29); "Writes in DuckDB-Iceberg" (2025-11-28).
 
+> **Revision (2026-08-04): the roll unit is now a configurable roll interval, not a day.**
+> Writers carry a `RollCycle` (a duration dividing 24h evenly — 4h, 6h, 12h, 1d default) and encode
+> each segment's interval in its file name: daily keeps `yyyyMMdd.<seq>.arena` unchanged; sub-day is
+> `yyyyMMdd.HHmm.<mins>m.<seq>.arena`. The roller groups purely by name, merges overlapping declared
+> intervals (a mid-interval cycle change) into one atomic unit, and commits one interval per
+> transaction — so a completed 4h interval of *today* archives while the writer is live on the next
+> one. The watermark `ascham.rolled-through` is now an **ISO instant** (a bare date from older tables
+> reads as end-of-that-day and upgrades on the next commit); snapshot summaries gained
+> `ascham.interval` (`start/end`). Iceberg partitioning stays `day(ts)` — intervals never cross
+> midnight — and interval-alignment verification (per segment, against its own declared interval)
+> replaces day-alignment. `segmentsPerFile` became `maxSegmentsPerFile`: below 1 (the default),
+> the whole interval lands in one parquet file and the cycle *is* the file-size dial. Known gap: the
+> arena-duckdb extension's name regex does not yet parse sub-day segment names.
+>
 > **Revision (2026-08-01, R5.5): the roll writer is now pure Java on the native Iceberg API**
 > (iceberg-core/parquet 1.11, no Hadoop beyond the shaded client pair). The DuckDB-embedded
 > executor described in §4/§5 below was built and shipped at R4–R5 and then replaced; DuckDB
@@ -32,10 +46,10 @@ Sources: duckdb.org iceberg "Writing to Iceberg" docs; "New DuckDB-Iceberg Featu
 >   serverless `HadoopCatalog` (no services); `http(s)://` is a REST catalog. Bare `s3://`
 >   warehouses are rejected (Hadoop-catalog commits are not atomic on object stores) — S3 goes
 >   through REST.
-> - **`roll_log` is gone.** The watermark is the `ito.rolled-through` **table property**, committed
->   in the same transaction as the day's data files; ownership is the `ito.arena-dir` property,
+> - **`roll_log` is gone.** The watermark is the `ascham.rolled-through` **table property**, committed
+>   in the same transaction as the day's data files; ownership is the `ascham.arena-dir` property,
 >   verified on every open. Segment provenance moved into each commit's **snapshot summary**
->   (`ito.day`, `ito.segments`, `ito.arena-dir`, `ito.rows`) for the future reclaim utility.
+>   (`ascham.day`, `ascham.segments`, `ascham.arena-dir`, `ascham.rows`) for the future reclaim utility.
 >   Recovery branch 2 of §3.3 ("data committed but unlogged") is structurally impossible now — one
 >   transaction carries data + provenance + watermark — and was deleted.
 > - **File sizing is explicit**: `segmentsPerFile` groups N consecutive same-day segments into one
@@ -68,7 +82,7 @@ Sources: duckdb.org iceberg "Writing to Iceberg" docs; "New DuckDB-Iceberg Featu
   seam.
 - **Watermark** *(superseded at R5.5 — see revision note)*: v1 used an explicit `roll_log` table —
   *not* `max(day)` over data partitions, which has two silent-gap failure modes (§3). Now the
-  `ito.rolled-through` table property, same reasoning: the catalog is the only durable state; no
+  `ascham.rolled-through` table property, same reasoning: the catalog is the only durable state; no
   sidecar files, no coordination service.
 - **Correctness before dedup**: realtime/historical never overlap in query results by
   **predicate disjointness on `ts`** around a per-table cutover, so no `DISTINCT`/anti-join is ever
@@ -541,7 +555,7 @@ cost a debugging round at R1 — worth reading before changing it:
 | **R3** ✅ **done** | `arena_scan(LIST)` overload (`TableFunctionSet`, two signatures, one bind) | **All green** — 10 new assertions in `scripts/test_extension.sh` (31 total): list == dir scan when it names every segment, single element, pushdown and zone-map pruning intact through the list, directory element expands, and duplicate / empty-list / NULL-entry / NULL-argument all rejected with clear errors |
 | **R4** ✅ **done** | `:cold` module: `TableRoller` (§4 protocol, all three recovery branches), `ArenaInventory` (discovery, freeze check, I2 verification), `DuckDbRollExecutor`, `TypeMapping`, `ColdConfig` | **All green** — 16 unit tests + 8 catalog integration tests (`./gradlew :cold:rollIT`): 2-day round-trip with row parity, per-partition (sym, ts) sortedness, watermark and `roll_log.segments` audit; ns fidelity preserved; re-run is a no-op with zero duplicates; **data-committed-but-unlogged repairs the log instead of re-copying**; a live writer's day is left alone; a misaligned day aborts whole; a 150k-row day sorts by spilling under a 256 MB limit |
 | **R5** ✅ **done** | `SegmentReclaimer` (grace-gated unlink), `RollService` (multi-table pass + shm-pressure alert), `RollScheduler` (startup drain, daily cadence, backoff retry) | **All green** — 35 cold unit tests + 13 catalog integration tests. Grace-gated unlink verified against the **store's** clock, not the roller's; reclaims only roll-log-named segments; never the newest; rejects path traversal; idempotent; a reader mapped pre-unlink keeps reading. Backlog: 3 writer-down days drain ascending in one pass. Ascending-abort: D−2 fails ⇒ D−3 never attempted, watermark stays at D−1. Multi-table: independent watermarks, one bad table does not block the others |
-| **R5.5** ✅ **done** | Native rewrite (see revision note): `IcebergRollExecutor` + `CatalogFactory` + `IcebergTypes` + `SegmentGroup`/`GroupSorter` replace `DuckDbRollExecutor`/`TypeMapping`; watermark → `ito.rolled-through` property, provenance → snapshot summaries, `roll_log` and `ito_meta` gone; `SegmentReclaimer` removed (standalone util later); destination-URL catalogs (local dir or REST); `segmentsPerFile` file sizing; declared sort order | **All green** — hermetic `LocalRollTest` (11 tests: parity, ns fidelity, per-file (sym,ts) sortedness, grouping 5→3 files at N=2, rerun-noop, not-frozen, misaligned abort commits nothing, foreign-arena refusal at ensureTable, crash-orphan invisibility, partial-backlog watermark); `RestCatalogIT` rolls through Lakekeeper/MinIO and DuckDB reads back count + max-nanos exact; demo rolls to a plain local directory with no services |
+| **R5.5** ✅ **done** | Native rewrite (see revision note): `IcebergRollExecutor` + `CatalogFactory` + `IcebergTypes` + `SegmentGroup`/`GroupSorter` replace `DuckDbRollExecutor`/`TypeMapping`; watermark → `ascham.rolled-through` property, provenance → snapshot summaries, `roll_log` and `ito_meta` gone; `SegmentReclaimer` removed (standalone util later); destination-URL catalogs (local dir or REST); `segmentsPerFile` file sizing; declared sort order | **All green** — hermetic `LocalRollTest` (11 tests: parity, ns fidelity, per-file (sym,ts) sortedness, grouping 5→3 files at N=2, rerun-noop, not-frozen, misaligned abort commits nothing, foreign-arena refusal at ensureTable, crash-orphan invisibility, partial-backlog watermark); `RestCatalogIT` rolls through Lakekeeper/MinIO and DuckDB reads back count + max-nanos exact; demo rolls to a plain local directory with no services |
 | **R6** | Unified surface v1: Flight-server views (A) + CutoverTracker; explicit-path docs (C) | continuous union query across a live roll: no dupes/no gaps at every transition; `EXPLAIN ANALYZE` shows arena pruning of rolled-not-unlinked segments; TTL ≪ grace asserted in config validation |
 | **R7** (v2, optional) | Extension union replacement scan (B) | bare `quotes` in a plain DuckDB CLI session (LOAD arena + ATTACH) resolves to the union; the R6 mid-roll test passes from the CLI |
 
@@ -597,5 +611,5 @@ cost a debugging round at R1 — worth reading before changing it:
 **Still open:**
 
 4. `CutoverTracker` push-refresh from the roller vs TTL-only — TTL-only in v1; a refresh hook is
-   trivial to add later. (R6; `cutoverDay` now reads the `ito.rolled-through` property — one
+   trivial to add later. (R6; `cutoverDay` now reads the `ascham.rolled-through` property — one
    metadata fetch, cheaper than the old `roll_log` scan.)

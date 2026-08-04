@@ -3,7 +3,7 @@ package io.ito.cold;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import io.ito.arena.rotate.DailyRotationPolicy;
+import io.ito.arena.rotate.RollCycle;
 import io.ito.arena.rotate.RotatingWriter;
 import io.ito.arena.rotate.SegmentDirectory;
 import java.nio.charset.StandardCharsets;
@@ -104,7 +104,7 @@ class GroupSorterTest {
         ColdFixtures.MutableClock clock =
                 new ColdFixtures.MutableClock(DAY.atStartOfDay(ZoneOffset.UTC).toInstant());
         try (RotatingWriter writer = RotatingWriter.open(dir, ColdFixtures.quotesSchema(64), 4096, 1L,
-                new DailyRotationPolicy(), clock, ColdFixtures.counterNanoClock())) {
+                RollCycle.DAILY, clock, ColdFixtures.counterNanoClock())) {
             ColdFixtures.append(writer, dayNanos(0), "AAPL", 1L);
             List<Path> segments = dir.list().stream().map(SegmentDirectory.SegmentName::path).toList();
             // The writer is still open: the row's batch is unsealed, so the group must refuse.
@@ -124,7 +124,7 @@ class GroupSorterTest {
         ColdFixtures.MutableClock clock =
                 new ColdFixtures.MutableClock(DAY.atStartOfDay(ZoneOffset.UTC).toInstant());
         try (RotatingWriter writer = RotatingWriter.open(dir, ColdFixtures.quotesSchema(64), 4096, 1L,
-                new DailyRotationPolicy(), clock, ColdFixtures.counterNanoClock())) {
+                RollCycle.DAILY, clock, ColdFixtures.counterNanoClock())) {
             for (int r = 0; r < rows; r++) {
                 if (split && r == rows / 2) {
                     writer.rotate(); // capacity-style rotation: same day, next sequence

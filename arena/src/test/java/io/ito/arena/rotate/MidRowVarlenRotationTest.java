@@ -41,7 +41,7 @@ class MidRowVarlenRotationTest {
         // maxBatches=1: any varlen overflow is in the segment's last batch by construction.
         // batchRows is large so only the byte caps (sym=16, bin=16) can bind.
         try (RotatingWriter writer = RotatingWriter.open(dir, RotateFixtures.varlen(1000, 16, 16), 1, 1L,
-                new DailyRotationPolicy(), clock, RotateFixtures.counterNanoClock())) {
+                RollCycle.DAILY, clock, RotateFixtures.counterNanoClock())) {
             Appender a = writer.appender();
             Path first = writer.currentPath();
 
@@ -111,7 +111,7 @@ class MidRowVarlenRotationTest {
         RotateFixtures.MutableClock clock = new RotateFixtures.MutableClock(Instant.parse("2026-07-28T10:00:00Z"));
 
         try (RotatingWriter writer = RotatingWriter.open(dir, RotateFixtures.varlen(1000, 16, 16), 1, 1L,
-                new DailyRotationPolicy(), clock, RotateFixtures.counterNanoClock())) {
+                RollCycle.DAILY, clock, RotateFixtures.counterNanoClock())) {
             Appender a = writer.appender();
             Path first = writer.currentPath();
 
@@ -136,7 +136,7 @@ class MidRowVarlenRotationTest {
         // maxBatches=2: overflow in batch 0 has a next batch, so the existing intra-segment
         // migration handles it and no rotation may happen (guards the predicate boundary).
         try (RotatingWriter writer = RotatingWriter.open(dir, RotateFixtures.varlen(1000, 16, 16), 2, 1L,
-                new DailyRotationPolicy(), clock, RotateFixtures.counterNanoClock())) {
+                RollCycle.DAILY, clock, RotateFixtures.counterNanoClock())) {
             Appender a = writer.appender();
             Path first = writer.currentPath();
 

@@ -2,7 +2,7 @@ package io.ito.cold;
 
 import io.ito.arena.schema.ArenaSchema;
 import java.nio.file.Path;
-import java.time.LocalDate;
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 
@@ -22,30 +22,30 @@ public interface RollExecutor extends AutoCloseable {
      * @throws ColdException if the table exists but belongs to a different arena directory. Two
      *                       arenas must not share one table: treating a foreign table as ours would
      *                       either strand this arena's rows (never archived, memory growing with no
-     *                       error) or duplicate days in history.
+     *                       error) or duplicate intervals in history.
      */
     void ensureTable(String table, ArenaSchema schema, List<String> sortColumns);
 
     /**
-     * The highest day recorded as fully rolled for {@code table}, or empty if none (or the table
-     * does not exist yet). This is the watermark: days at or below it are done (rolling is
-     * ascending and gapless, I1), and the cutover between historical and realtime data is the start
-     * of the following day. Read from the table's own metadata, so it survives snapshot expiration
-     * and there is no side log to lose.
+     * The instant {@code table} is fully rolled through, or empty if none (or the table does not
+     * exist yet). This is the watermark: every row before it is committed (rolling is ascending and
+     * gapless, I1), and the cutover between historical and realtime data sits exactly on it. Read
+     * from the table's own metadata, so it survives snapshot expiration and there is no side log to
+     * lose.
      */
-    Optional<LocalDate> highestRolledDay(String table);
+    Optional<Instant> rolledThrough(String table);
 
     /**
-     * Copies one day out of the given segments into the historical table: consecutive segments are
-     * grouped into parquet files, each group sorted by {@code sortColumns}, and the whole day —
-     * data files, segment provenance in the snapshot summary, and the advanced watermark — commits
-     * as one atomic transaction. A crash mid-day therefore commits nothing: the next run simply
-     * rolls the day again.
+     * Copies one roll interval out of the given segments into the historical table: consecutive
+     * segments are grouped into parquet files, each group sorted by {@code sortColumns}, and the
+     * whole interval — data files, segment provenance in the snapshot summary, and the advanced
+     * watermark — commits as one atomic transaction. A crash mid-interval therefore commits
+     * nothing: the next run simply rolls the interval again.
      *
      * @return rows written
      */
-    long rollDay(String table, ArenaSchema schema, LocalDate day, List<Path> segments,
-                 List<String> sortColumns);
+    long rollInterval(String table, ArenaSchema schema, Instant intervalStart, Instant intervalEnd,
+                      List<Path> segments, List<String> sortColumns);
 
     @Override
     void close();

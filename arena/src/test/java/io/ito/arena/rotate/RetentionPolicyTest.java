@@ -31,7 +31,7 @@ class RetentionPolicyTest {
         RotateFixtures.MutableClock clock = new RotateFixtures.MutableClock(T0);
 
         try (RotatingWriter writer = RotatingWriter.open(dir, schema, 8, 1L,
-                new DailyRotationPolicy(), clock, RotateFixtures.counterNanoClock())) {
+                RollCycle.DAILY, clock, RotateFixtures.counterNanoClock())) {
             RotateFixtures.append(writer, 1000, 1);
             for (int i = 0; i < 5; i++) {
                 writer.rotate();
@@ -51,7 +51,7 @@ class RetentionPolicyTest {
 
         try (RotatingWriter writer = RotatingWriter.open(dir, schema, 8, 1L,
                 Retention.emergencyBackstop(2),
-                new DailyRotationPolicy(), clock, RotateFixtures.counterNanoClock())) {
+                RollCycle.DAILY, clock, RotateFixtures.counterNanoClock())) {
             RotateFixtures.append(writer, 1000, 1);
             writer.rotate();
             writer.rotate();

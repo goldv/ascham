@@ -34,6 +34,7 @@ public final class BackfillMain {
               --batch-rows N       rows per batch (default 4096)
               --max-batches N      batches per segment (default 512)
               --seed N             generator seed (default 42)
+              --roll-cycle D       segment roll cycle, e.g. 4h, 6h, 1d (default 1d)
             """;
 
     private static final long NANOS_PER_DAY = 86_400L * 1_000_000_000L;
@@ -64,7 +65,8 @@ public final class BackfillMain {
         long totalTrades = 0;
         long start = System.nanoTime();
         try (MarketDataWriter writer = new MarketDataWriter(dir, symbols, options.batchRows(),
-                options.maxBatches(), options.seed(), options.quotesPerTrade(), clock, nanoClock)) {
+                options.maxBatches(), options.seed(), options.quotesPerTrade(), options.rollCycle(),
+                clock, nanoClock)) {
 
             for (int d = 0; d < days; d++) {
                 LocalDate day = firstDay.plusDays(d);
@@ -80,7 +82,11 @@ public final class BackfillMain {
                 long quotes = 0;
                 long trades = 0;
                 for (int r = 0; r < rowsPerDay; r++) {
-                    nanoClock.set(dayStart + r * step);
+                    long ts = dayStart + r * step;
+                    nanoClock.set(ts);
+                    // Advance the wall clock with event time so a sub-day cycle rotates at its
+                    // interval boundaries, exactly as it would live.
+                    clock.set(Instant.ofEpochSecond(ts / 1_000_000_000L, ts % 1_000_000_000L));
                     if (writer.writeEvent(nanoClock.nanoTime())) {
                         trades++;
                     }

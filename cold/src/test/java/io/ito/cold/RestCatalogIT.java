@@ -73,10 +73,12 @@ class RestCatalogIT {
     void nativeRollLandsInLakekeeperAndDuckDbReadsItBack() throws Exception {
         ColdFixtures.writeDays(arenaBase, List.of(D1), ROWS);
 
-        TableRoller.RollResult result = new TableRoller(config, executor).roll("quotes", TODAY);
+        TableRoller.RollResult result = new TableRoller(config, executor)
+                .roll("quotes", TODAY.atStartOfDay(ZoneOffset.UTC).toInstant());
         assertThat(result.totalRows()).isEqualTo(ROWS);
-        assertThat(result.days()).singleElement()
-                .extracting(TableRoller.DayResult::status).isEqualTo(TableRoller.DayStatus.ROLLED);
+        assertThat(result.intervals()).singleElement()
+                .extracting(TableRoller.IntervalResult::status)
+                .isEqualTo(TableRoller.IntervalStatus.ROLLED);
 
         // The highest nano the fixture wrote — sub-microsecond digits included. If any precision
         // were lost between the native writer and DuckDB's reader, this exact value would not match.

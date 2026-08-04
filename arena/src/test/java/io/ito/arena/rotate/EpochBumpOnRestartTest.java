@@ -24,7 +24,7 @@ class EpochBumpOnRestartTest {
         // First writer instance, epoch 1.
         Path first;
         try (RotatingWriter writer = RotatingWriter.open(dir, schema, 8, 1L,
-                new DailyRotationPolicy(), clock, RotateFixtures.counterNanoClock())) {
+                RollCycle.DAILY, clock, RotateFixtures.counterNanoClock())) {
             RotateFixtures.append(writer, 1000, 1);
             first = writer.currentPath();
         }
@@ -34,7 +34,7 @@ class EpochBumpOnRestartTest {
         long restartEpoch = dir.latestEpoch().orElse(0) + 1;
         Path second;
         try (RotatingWriter writer = RotatingWriter.open(dir, schema, 8, restartEpoch,
-                new DailyRotationPolicy(), clock, RotateFixtures.counterNanoClock())) {
+                RollCycle.DAILY, clock, RotateFixtures.counterNanoClock())) {
             RotateFixtures.append(writer, 2000, 2);
             second = writer.currentPath();
         }

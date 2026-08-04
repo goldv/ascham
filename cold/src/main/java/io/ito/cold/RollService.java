@@ -5,8 +5,6 @@ import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
-import java.time.LocalDate;
-import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Stream;
@@ -16,15 +14,15 @@ import java.util.stream.Stream;
  * (docs/cold-tier-design-plan.md §4). Reclamation of archived segments is deliberately not part of
  * the pass — a standalone utility unlinks them from the provenance the roll records.
  *
- * <p>Pull-based by design — it asks the arena "which days are finished?" rather than reacting to
- * rotation events, so a run started at any time converges to the same place. That is what makes the
- * schedule uninteresting: a missed run, a crashed run, and a run during a catalog outage all recover
- * by simply running again.
+ * <p>Pull-based by design — it asks the arena "which intervals are finished?" rather than reacting
+ * to rotation events, so a run started at any time converges to the same place. That is what makes
+ * the schedule uninteresting: a missed run, a crashed run, and a run during a catalog outage all
+ * recover by simply running again.
  *
- * <p>Tables are independent. One table failing (a misaligned day, say) does not stop the others —
- * its failure is recorded and the run continues, because blocking every table on one bad one would
- * turn a contained problem into a total stall. Within a table, days remain strictly ordered and
- * abort on first failure (invariant I1).
+ * <p>Tables are independent. One table failing (a misaligned interval, say) does not stop the
+ * others — its failure is recorded and the run continues, because blocking every table on one bad
+ * one would turn a contained problem into a total stall. Within a table, intervals remain strictly
+ * ordered and abort on first failure (invariant I1).
  */
 public final class RollService {
 
@@ -58,8 +56,8 @@ public final class RollService {
     }
 
     /**
-     * @param clock supplies "today" — the boundary no day at or after may be rolled, since the
-     *              writer still owns it. Injectable so a run can be pinned to a specific date.
+     * @param clock supplies "now" — the boundary no interval ending after it may be rolled, since
+     *              the writer still owns it. Injectable so a run can be pinned to a specific time.
      */
     public RollService(ColdConfig config, RollExecutor executor, long arenaBytesAlertThreshold,
                        Clock clock) {
@@ -94,14 +92,14 @@ public final class RollService {
     private TableOutcome runTable(String table) {
         try {
             TableRoller.RollResult roll = new TableRoller(config, executor)
-                    .roll(table, LocalDate.now(clock.withZone(ZoneOffset.UTC)));
+                    .roll(table, clock.instant());
             if (!roll.rolled().isEmpty()) {
-                LOG.log(System.Logger.Level.INFO, "table {0}: rolled {1} day(s) ({2} rows)",
+                LOG.log(System.Logger.Level.INFO, "table {0}: rolled {1} interval(s) ({2} rows)",
                         table, roll.rolled().size(), roll.totalRows());
             }
             return new TableOutcome(table, roll, null);
         } catch (RuntimeException e) {
-            // Contained on purpose: a bad day in one table must not stop the others from draining.
+            // Contained on purpose: one bad table must not stop the others from draining.
             LOG.log(System.Logger.Level.ERROR, "table " + table + ": roll failed, will retry next run", e);
             return new TableOutcome(table, new TableRoller.RollResult(table, List.of()), e);
         }

@@ -1,6 +1,6 @@
 package io.ito.arena.demo;
 
-import io.ito.arena.rotate.DailyRotationPolicy;
+import io.ito.arena.rotate.RollCycle;
 import io.ito.arena.rotate.RotatingWriter;
 import io.ito.arena.rotate.SegmentDirectory;
 import io.ito.arena.schema.ArenaSchema;
@@ -37,7 +37,7 @@ public final class LiveWriterMain {
         long epoch = dir.latestEpoch().orElse(0) + 1;
         // No writer-side retention: segment reclamation belongs to the cold-tier roll (Retention).
         RotatingWriter writer = RotatingWriter.open(dir, quotesSchema(table), 4096, epoch,
-                new DailyRotationPolicy(), Clock.systemUTC(), new SystemEpochNanoClock());
+                RollCycle.DAILY, Clock.systemUTC(), new SystemEpochNanoClock());
 
         Appender appender = writer.appender();
         String[] symbols = {"AAPL", "MSFT", "GOOG", "AMZN", "NVDA"};

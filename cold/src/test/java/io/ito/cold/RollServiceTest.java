@@ -6,7 +6,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -28,63 +30,65 @@ class RollServiceTest {
         ColdFixtures.writeDays(base, List.of(D1, D2, D3), 20);
         FakeRollExecutor executor = new FakeRollExecutor();
 
-        TableRoller.RollResult result = new TableRoller(config(), executor).roll("quotes", D4);
+        TableRoller.RollResult result = new TableRoller(config(), executor).roll("quotes", at(D4));
 
-        assertThat(result.days()).extracting(TableRoller.DayResult::day).containsExactly(D1, D2, D3);
-        // Strictly ascending: the watermark can only stand in for the whole set if no day is skipped.
-        assertThat(executor.rollDayCalls())
-                .containsExactly("rollDay:quotes:" + D1, "rollDay:quotes:" + D2, "rollDay:quotes:" + D3);
+        assertThat(result.intervals()).extracting(TableRoller.IntervalResult::start)
+                .containsExactly(at(D1), at(D2), at(D3));
+        // Strictly ascending: the watermark can only stand in for the whole set if none is skipped.
+        assertThat(executor.rollIntervalCalls()).containsExactly(
+                "rollInterval:quotes:" + at(D1),
+                "rollInterval:quotes:" + at(D2),
+                "rollInterval:quotes:" + at(D3));
     }
 
     @Test
-    void afailedDayStopsEveryLaterDay() {
+    void aFailedIntervalStopsEveryLaterInterval() {
         ColdFixtures.writeDays(base, List.of(D1, D2, D3), 20);
         FakeRollExecutor executor = new FakeRollExecutor();
-        executor.failOnDay = D2; // e.g. the catalog rejected this commit
+        executor.failOnIntervalStart = at(D2); // e.g. the catalog rejected this commit
 
-        assertThatThrownBy(() -> new TableRoller(config(), executor).roll("quotes", D4))
+        assertThatThrownBy(() -> new TableRoller(config(), executor).roll("quotes", at(D4)))
                 .isInstanceOf(ColdException.class);
 
         // D1 rolled, D2 failed, and D3 was never attempted — rolling it would leave a permanent hole
         // at D2 that neither the historical nor the realtime side would serve (§3.1, hole 1).
-        assertThat(executor.rollDayCalls())
-                .containsExactly("rollDay:quotes:" + D1, "rollDay:quotes:" + D2);
-        assertThat(executor.highestRolledDay("quotes")).contains(D1);
+        assertThat(executor.rollIntervalCalls()).containsExactly(
+                "rollInterval:quotes:" + at(D1), "rollInterval:quotes:" + at(D2));
+        assertThat(executor.rolledThrough("quotes")).contains(at(D2)); // = D1 fully committed
     }
 
     @Test
-    void daysAtOrBelowTheWatermarkAreNotRolledAgain() {
+    void intervalsAtOrBelowTheWatermarkAreNotRolledAgain() {
         ColdFixtures.writeDays(base, List.of(D1, D2, D3), 10);
         FakeRollExecutor executor = new FakeRollExecutor();
-        executor.seedRolledDay("quotes", D1);
-        executor.seedRolledDay("quotes", D2);
+        executor.seedRolledThrough("quotes", at(D3)); // D1 and D2 committed by an earlier run
 
-        TableRoller.RollResult result = new TableRoller(config(), executor).roll("quotes", D4);
+        TableRoller.RollResult result = new TableRoller(config(), executor).roll("quotes", at(D4));
 
-        assertThat(result.days()).extracting(TableRoller.DayResult::status).containsExactly(
-                TableRoller.DayStatus.ALREADY_ROLLED,
-                TableRoller.DayStatus.ALREADY_ROLLED,
-                TableRoller.DayStatus.ROLLED);
-        assertThat(executor.rollDayCalls()).containsExactly("rollDay:quotes:" + D3);
+        assertThat(result.intervals()).extracting(TableRoller.IntervalResult::status).containsExactly(
+                TableRoller.IntervalStatus.ALREADY_ROLLED,
+                TableRoller.IntervalStatus.ALREADY_ROLLED,
+                TableRoller.IntervalStatus.ROLLED);
+        assertThat(executor.rollIntervalCalls()).containsExactly("rollInterval:quotes:" + at(D3));
     }
 
     @Test
     void aTableOwnedByAnotherArenaFailsLoudlyRatherThanSilentlySkipping() {
         // A historical table created by a *different* arena must not be mistaken for ours.
         // Skipping would strand this arena's rows forever — never archived, never reclaimed,
-        // shared memory growing, and the only symptom "rolled 0 days". Found in the field: a demo
-        // roll against one arena blocked a completely separate arena's real data. The ownership
-        // check now happens at ensureTable, before any day is touched.
+        // shared memory growing, and the only symptom "rolled 0 intervals". Found in the field: a
+        // demo roll against one arena blocked a completely separate arena's real data. The
+        // ownership check now happens at ensureTable, before any interval is touched.
         ColdFixtures.writeDays(base, List.of(D1, D2), 10);
         FakeRollExecutor executor = new FakeRollExecutor();
         executor.foreignArenaTable = "quotes";
 
-        assertThatThrownBy(() -> new TableRoller(config(), executor).roll("quotes", D4))
+        assertThatThrownBy(() -> new TableRoller(config(), executor).roll("quotes", at(D4)))
                 .isInstanceOf(ColdException.class)
                 .hasMessageContaining("different arena");
 
-        // And it did not quietly roll a day on top of the foreign table, which would duplicate it.
-        assertThat(executor.rollDayCalls()).isEmpty();
+        // And it did not quietly roll on top of the foreign table, which would duplicate it.
+        assertThat(executor.rollIntervalCalls()).isEmpty();
     }
 
     @Test
@@ -107,7 +111,7 @@ class RollServiceTest {
         ColdFixtures.writeDays(base, List.of(D1, D2), 10);
         writeSecondTable("trades");
         FakeRollExecutor executor = new FakeRollExecutor();
-        executor.failOnDay = D1; // only quotes fails; trades has the same days but must still drain
+        executor.failOnIntervalStart = at(D1); // only quotes fails; trades must still drain
         executor.failOnTable = "quotes";
 
         RollService.Pass pass = new RollService(config(), executor, 0, clockAt(D4)).runOnce();
@@ -131,7 +135,7 @@ class RollServiceTest {
 
         RollService.Pass second = service.runOnce();
         assertThat(second.rowsRolled()).isZero(); // nothing new to roll, nothing rolled twice
-        assertThat(executor.rollDayCalls()).hasSize(3);
+        assertThat(executor.rollIntervalCalls()).hasSize(3);
     }
 
     @Test
@@ -176,9 +180,12 @@ class RollServiceTest {
         }
     }
 
+    private static Instant at(LocalDate day) {
+        return day.atStartOfDay(ZoneOffset.UTC).toInstant();
+    }
+
     private static java.time.Clock clockAt(LocalDate day) {
-        return java.time.Clock.fixed(day.atStartOfDay(java.time.ZoneOffset.UTC).toInstant(),
-                java.time.ZoneOffset.UTC);
+        return java.time.Clock.fixed(at(day), ZoneOffset.UTC);
     }
 
     private ColdConfig config() {

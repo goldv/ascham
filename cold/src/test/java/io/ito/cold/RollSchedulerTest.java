@@ -35,6 +35,18 @@ class RollSchedulerTest {
     }
 
     @Test
+    void aFixedCadenceKeepsRunningPassesWithoutWaitingForTheDailySlot() throws Exception {
+        AtomicInteger passes = new AtomicInteger();
+        try (RollScheduler scheduler = new RollScheduler(countingPass(passes, false),
+                Duration.ofMillis(20), Duration.ofMillis(20), Duration.ofMillis(80),
+                Clock.systemUTC())) {
+            scheduler.start();
+            // Clean passes reschedule on the cadence, not tomorrow's daily slot.
+            assertThat(waitFor(() -> passes.get() >= 3)).isTrue();
+        }
+    }
+
+    @Test
     void startupRunsAPassImmediatelyToDrainAnyBacklog() throws Exception {
         AtomicInteger passes = new AtomicInteger();
         try (RollScheduler scheduler = new RollScheduler(countingPass(passes, false), LocalTime.of(0, 15),

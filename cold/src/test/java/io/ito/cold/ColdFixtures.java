@@ -1,6 +1,6 @@
 package io.ito.cold;
 
-import io.ito.arena.rotate.DailyRotationPolicy;
+import io.ito.arena.rotate.RollCycle;
 import io.ito.arena.rotate.RotatingWriter;
 import io.ito.arena.rotate.SegmentDirectory;
 import io.ito.arena.schema.ArenaSchema;
@@ -99,7 +99,7 @@ final class ColdFixtures {
         MutableClock clock = new MutableClock(days.get(0).atStartOfDay(ZoneOffset.UTC).toInstant());
         SegmentDirectory dir = new SegmentDirectory(base, "quotes");
         try (RotatingWriter writer = RotatingWriter.open(dir, quotesSchema(64), 4096, 1L,
-                new DailyRotationPolicy(), clock, counterNanoClock())) {
+                RollCycle.DAILY, clock, counterNanoClock())) {
             for (LocalDate day : days) {
                 clock.set(day.atStartOfDay(ZoneOffset.UTC).toInstant());
                 writer.heartbeat(); // rotates onto the new day (R2: rotation is checked here too)
@@ -111,6 +111,29 @@ final class ColdFixtures {
                 long step = NANOS_PER_DAY / (rowsPerDay + 1L);
                 for (int r = 0; r < rowsPerDay; r++) {
                     long ts = dayStart + r * step + (r % 997) + 7;
+                    append(writer, ts, SYMBOLS[r % SYMBOLS.length], 1_000_000L + r);
+                }
+            }
+        }
+    }
+
+    /**
+     * Writes {@code rowsPerInterval} rows for each interval start into {@code base/quotes} with the
+     * given cycle, rotating on the interval boundary exactly as a live writer would, and sealing
+     * every segment on close. Starts must be ascending and on the cycle grid.
+     */
+    static void writeIntervals(Path base, RollCycle cycle, List<Instant> starts, int rowsPerInterval) {
+        MutableClock clock = new MutableClock(starts.get(0));
+        SegmentDirectory dir = new SegmentDirectory(base, "quotes");
+        try (RotatingWriter writer = RotatingWriter.open(dir, quotesSchema(64), 4096, 1L,
+                cycle, clock, counterNanoClock())) {
+            for (Instant start : starts) {
+                clock.set(start);
+                writer.heartbeat(); // rotates onto the new interval
+                long startNanos = start.getEpochSecond() * 1_000_000_000L;
+                long step = cycle.duration().toNanos() / (rowsPerInterval + 1L);
+                for (int r = 0; r < rowsPerInterval; r++) {
+                    long ts = startNanos + r * step + (r % 997) + 7;
                     append(writer, ts, SYMBOLS[r % SYMBOLS.length], 1_000_000L + r);
                 }
             }

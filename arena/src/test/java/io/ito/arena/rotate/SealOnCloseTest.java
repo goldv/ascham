@@ -33,7 +33,7 @@ class SealOnCloseTest {
 
         Path first;
         try (RotatingWriter writer = RotatingWriter.open(dir, schema, 8, 1L,
-                new DailyRotationPolicy(), clock, RotateFixtures.counterNanoClock())) {
+                RollCycle.DAILY, clock, RotateFixtures.counterNanoClock())) {
             // 3 rows: batch0 seals on row count, batch1 holds the 3rd row and is still in progress.
             RotateFixtures.append(writer, 1000, 10);
             RotateFixtures.append(writer, 1001, 11);
@@ -67,7 +67,7 @@ class SealOnCloseTest {
 
         Path only;
         try (RotatingWriter writer = RotatingWriter.open(dir, schema, 8, 1L,
-                new DailyRotationPolicy(), clock, RotateFixtures.counterNanoClock())) {
+                RollCycle.DAILY, clock, RotateFixtures.counterNanoClock())) {
             RotateFixtures.append(writer, 2000, 20);
             RotateFixtures.append(writer, 2001, 21);
             only = writer.currentPath();
@@ -90,7 +90,7 @@ class SealOnCloseTest {
 
         Path path;
         try (RotatingWriter writer = RotatingWriter.open(dir, schema, 16, 1L,
-                new DailyRotationPolicy(), clock, RotateFixtures.counterNanoClock())) {
+                RollCycle.DAILY, clock, RotateFixtures.counterNanoClock())) {
             for (int r = 0; r < 10; r++) { // 4 + 4 + 2, so the trailing batch is partial
                 RotateFixtures.append(writer, 5000 + r, r);
             }
@@ -118,7 +118,7 @@ class SealOnCloseTest {
 
         Path path;
         try (RotatingWriter writer = RotatingWriter.open(dir, schema, 8, 1L,
-                new DailyRotationPolicy(), clock, RotateFixtures.counterNanoClock())) {
+                RollCycle.DAILY, clock, RotateFixtures.counterNanoClock())) {
             RotateFixtures.append(writer, 4000, 40);
             writer.current().seal(); // seals batch0 and opens an empty batch1
             path = writer.currentPath();
@@ -141,7 +141,7 @@ class SealOnCloseTest {
         RotateFixtures.MutableClock clock = new RotateFixtures.MutableClock(Instant.parse("2026-07-28T10:00:00Z"));
 
         RotatingWriter writer = RotatingWriter.open(dir, schema, 8, 1L,
-                new DailyRotationPolicy(), clock, RotateFixtures.counterNanoClock());
+                RollCycle.DAILY, clock, RotateFixtures.counterNanoClock());
         RotateFixtures.append(writer, 3000, 30);
         Path path = writer.currentPath();
         writer.close();

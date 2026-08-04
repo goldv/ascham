@@ -5,8 +5,10 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -37,19 +39,20 @@ import org.apache.iceberg.io.OutputFileFactory;
 import org.apache.iceberg.parquet.Parquet;
 
 /**
- * Rolls days into Iceberg natively: arena segments are read through their zero-copy Arrow roots,
- * each file group is ordered by the index sort, rows stream through the generic parquet writer,
- * and one transaction commits the whole day — data files, segment provenance in the snapshot
- * summary, and the watermark table property, atomically.
+ * Rolls intervals into Iceberg natively: arena segments are read through their zero-copy Arrow
+ * roots, each file group is ordered by the index sort, rows stream through the generic parquet
+ * writer, and one transaction commits the whole interval — data files, segment provenance in the
+ * snapshot summary, and the watermark table property, atomically.
  *
  * <p>State lives in the table itself, in two places with two jobs:
  * <ul>
- *   <li><b>Table properties</b> carry correctness: {@code ito.arena-dir} (which arena owns this
- *       table, checked on every open) and {@code ito.rolled-through} (the day watermark). They are
- *       updated in the same commit as the data and survive snapshot expiration.</li>
+ *   <li><b>Table properties</b> carry correctness: {@code ascham.arena-dir} (which arena owns this
+ *       table, checked on every open) and {@code ascham.rolled-through} (the watermark instant).
+ *       They are updated in the same commit as the data and survive snapshot expiration.</li>
  *   <li><b>Snapshot summaries</b> carry provenance: which segment files fed each commit
- *       ({@code ito.day}, {@code ito.segments}, {@code ito.arena-dir}, {@code ito.rows}) — the
- *       input a reclaim utility needs, consumed before snapshots are expired.</li>
+ *       ({@code ascham.day}, {@code ascham.interval}, {@code ascham.segments},
+ *       {@code ascham.arena-dir}, {@code ascham.rows}) — the input a reclaim utility needs,
+ *       consumed before snapshots are expired.</li>
  * </ul>
  *
  * <p>Not thread-safe: one instance drives one roll pass, and {@link TableRoller} is
@@ -60,17 +63,24 @@ public final class IcebergRollExecutor implements RollExecutor {
     private static final System.Logger LOG = System.getLogger(IcebergRollExecutor.class.getName());
 
     /** Table property: the arena table directory this table archives. Ownership, not audit. */
-    public static final String PROP_ARENA_DIR = "ito.arena-dir";
-    /** Table property: the highest fully-committed day (ISO date). The watermark. */
-    public static final String PROP_ROLLED_THROUGH = "ito.rolled-through";
-    /** Snapshot summary: the day this commit archived (ISO date). */
-    public static final String SUMMARY_DAY = "ito.day";
+    public static final String PROP_ARENA_DIR = "ascham.arena-dir";
+    /**
+     * Table property: the instant the table is fully committed through (ISO instant). The
+     * watermark. Tables written before interval rolls carry a bare ISO date meaning "that day fully
+     * rolled"; it reads back as the following midnight and is rewritten as an instant on the next
+     * commit.
+     */
+    public static final String PROP_ROLLED_THROUGH = "ascham.rolled-through";
+    /** Snapshot summary: the UTC day this commit's interval lies in (ISO date). */
+    public static final String SUMMARY_DAY = "ascham.day";
+    /** Snapshot summary: the roll interval this commit archived ({@code start/end} ISO instants). */
+    public static final String SUMMARY_INTERVAL = "ascham.interval";
     /** Snapshot summary: comma-joined segment file names this commit was built from. */
-    public static final String SUMMARY_SEGMENTS = "ito.segments";
+    public static final String SUMMARY_SEGMENTS = "ascham.segments";
     /** Snapshot summary: the arena table directory the segments were read from. */
-    public static final String SUMMARY_ARENA_DIR = "ito.arena-dir";
+    public static final String SUMMARY_ARENA_DIR = "ascham.arena-dir";
     /** Snapshot summary: rows written by this commit. */
-    public static final String SUMMARY_ROWS = "ito.rows";
+    public static final String SUMMARY_ROWS = "ascham.rows";
 
     private final ColdConfig config;
     private final Catalog catalog;
@@ -97,7 +107,7 @@ public final class IcebergRollExecutor implements RollExecutor {
     }
 
     @Override
-    public Optional<LocalDate> highestRolledDay(String table) {
+    public Optional<Instant> rolledThrough(String table) {
         Table t = tables.get(table);
         if (t == null) {
             try {
@@ -109,23 +119,34 @@ public final class IcebergRollExecutor implements RollExecutor {
         } else {
             t.refresh();
         }
-        return Optional.ofNullable(t.properties().get(PROP_ROLLED_THROUGH)).map(LocalDate::parse);
+        return Optional.ofNullable(t.properties().get(PROP_ROLLED_THROUGH))
+                .map(IcebergRollExecutor::parseWatermark);
+    }
+
+    /** Instant since interval rolls; a bare date from an older table means "that day fully rolled". */
+    private static Instant parseWatermark(String value) {
+        try {
+            return Instant.parse(value);
+        } catch (DateTimeParseException notAnInstant) {
+            return LocalDate.parse(value).plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant();
+        }
     }
 
     @Override
-    public long rollDay(String table, ArenaSchema schema, LocalDate day, List<Path> segments,
-                        List<String> sortColumns) {
+    public long rollInterval(String table, ArenaSchema schema, Instant intervalStart, Instant intervalEnd,
+                             List<Path> segments, List<String> sortColumns) {
         Table t = tables.get(table);
         if (t == null) {
-            throw new IllegalStateException("ensureTable must run before rollDay for " + table);
+            throw new IllegalStateException("ensureTable must run before rollInterval for " + table);
         }
 
         List<DataFile> files = new ArrayList<>();
         long rows = 0;
         try {
-            for (List<Path> groupSegments : groups(segments, config.segmentsPerFile())) {
+            int cap = config.maxSegmentsPerFile();
+            for (List<Path> groupSegments : groups(segments, cap < 1 ? Integer.MAX_VALUE : cap)) {
                 try (SegmentGroup group = SegmentGroup.open(groupSegments)) {
-                    files.add(writeGroup(t, schema, day, group, sortColumns));
+                    files.add(writeGroup(t, schema, intervalStart, intervalEnd, group, sortColumns));
                     rows += group.rowCount();
                 }
             }
@@ -133,13 +154,14 @@ public final class IcebergRollExecutor implements RollExecutor {
             Transaction txn = t.newTransaction();
             AppendFiles append = txn.newAppend();
             files.forEach(append::appendFile);
-            append.set(SUMMARY_DAY, day.toString());
+            append.set(SUMMARY_DAY, LocalDate.ofInstant(intervalStart, ZoneOffset.UTC).toString());
+            append.set(SUMMARY_INTERVAL, intervalStart + "/" + intervalEnd);
             append.set(SUMMARY_SEGMENTS,
                     String.join(",", segments.stream().map(p -> p.getFileName().toString()).toList()));
             append.set(SUMMARY_ARENA_DIR, config.arenaDirOf(table));
             append.set(SUMMARY_ROWS, Long.toString(rows));
             append.commit();
-            txn.updateProperties().set(PROP_ROLLED_THROUGH, day.toString()).commit();
+            txn.updateProperties().set(PROP_ROLLED_THROUGH, intervalEnd.toString()).commit();
             txn.commitTransaction();
             return rows;
         } catch (RuntimeException e) {
@@ -147,7 +169,8 @@ public final class IcebergRollExecutor implements RollExecutor {
             // behind is an unreferenced orphan for standard orphan-file cleanup to collect.
             deleteQuietly(t, files);
             throw e instanceof ColdException c ? c
-                    : new ColdException("failed to roll " + table + " day " + day, e);
+                    : new ColdException("failed to roll " + table + " interval ["
+                            + intervalStart + ", " + intervalEnd + ")", e);
         }
     }
 
@@ -217,17 +240,18 @@ public final class IcebergRollExecutor implements RollExecutor {
 
     // --- the write path ---
 
-    private DataFile writeGroup(Table t, ArenaSchema schema, LocalDate day, SegmentGroup group,
-                                List<String> sortColumns) {
+    private DataFile writeGroup(Table t, ArenaSchema schema, Instant intervalStart, Instant intervalEnd,
+                                SegmentGroup group, List<String> sortColumns) {
         int[] order = GroupSorter.sortedIndex(group, sortColumns);
         IcebergTypes.ColumnCopier[] copiers = IcebergTypes.copiers(schema);
         int timeOrdinal = ordinalOf(schema, schema.metadata().timeColumn());
-        long dayStart = day.atStartOfDay(ZoneOffset.UTC).toInstant().getEpochSecond() * 1_000_000_000L;
-        long nextDay = day.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant().getEpochSecond()
-                * 1_000_000_000L;
+        long startNanos = intervalStart.getEpochSecond() * 1_000_000_000L;
+        long endNanos = intervalEnd.getEpochSecond() * 1_000_000_000L;
 
         // The partition tuple is built directly — one int, days from epoch — rather than derived
-        // from row values, because the day is already decided and verified (I2).
+        // from row values, because the interval is already decided and verified (I2). Partitioning
+        // stays daily whatever the cycle: an interval never spans a day, so its day is well defined.
+        LocalDate day = LocalDate.ofInstant(intervalStart, ZoneOffset.UTC);
         GenericRecord partition = GenericRecord.create(t.spec().partitionType());
         partition.set(0, (int) day.toEpochDay());
 
@@ -248,13 +272,13 @@ public final class IcebergRollExecutor implements RollExecutor {
                 VectorSchemaRoot root = group.root(b);
                 int row = g - group.batchStart(b);
 
-                // Belt-and-braces: day-alignment is verified up front from the zone maps, so this
-                // should never fire. It is here so that even a verification bug cannot smear rows
-                // across partitions or desynchronise the watermark from the data (§3.2, I2).
+                // Belt-and-braces: interval-alignment is verified up front from the zone maps, so
+                // this should never fire. It is here so that even a verification bug cannot smear
+                // rows across partitions or desynchronise the watermark from the data (§3.2, I2).
                 long ts = ((TimeStampVector) root.getVector(timeOrdinal)).get(row);
-                if (ts < dayStart || ts >= nextDay) {
-                    throw new ColdException("row timestamp " + ts + " escapes day " + day
-                            + " [" + dayStart + ", " + nextDay + ") — day-alignment verification "
+                if (ts < startNanos || ts >= endNanos) {
+                    throw new ColdException("row timestamp " + ts + " escapes interval ["
+                            + startNanos + ", " + endNanos + ") — interval-alignment verification "
                             + "should have caught this");
                 }
 
@@ -267,7 +291,8 @@ public final class IcebergRollExecutor implements RollExecutor {
             writer.close();
             return writer.toDataFile();
         } catch (IOException e) {
-            throw new UncheckedIOException("failed to write a parquet group for day " + day, e);
+            throw new UncheckedIOException("failed to write a parquet group for interval ["
+                    + intervalStart + ", " + intervalEnd + ")", e);
         }
     }
 
@@ -280,7 +305,7 @@ public final class IcebergRollExecutor implements RollExecutor {
         throw new ColdException("time column '" + column + "' does not exist in the arena schema");
     }
 
-    /** Consecutive runs of {@code size} — the file-size dial (N segments in, one parquet out). */
+    /** Consecutive runs of at most {@code size} — the file-size cap (N segments in, one parquet out). */
     private static List<List<Path>> groups(List<Path> segments, int size) {
         List<List<Path>> out = new ArrayList<>();
         for (int i = 0; i < segments.size(); i += size) {

@@ -24,7 +24,7 @@ class RetentionUnlinkTest {
 
         try (RotatingWriter writer = RotatingWriter.open(dir, schema, 8, 1L,
                 Retention.emergencyBackstop(2),
-                new DailyRotationPolicy(), clock, RotateFixtures.counterNanoClock())) {
+                RollCycle.DAILY, clock, RotateFixtures.counterNanoClock())) {
             RotateFixtures.append(writer, 1000, 1);
             Path oldest = writer.currentPath();
 
