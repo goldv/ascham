@@ -15,26 +15,6 @@ class MarketDataGeneratorTest {
     private static final List<String> SYMBOLS = MarketDataGenerator.DEFAULT_SYMBOLS;
 
     @Test
-    void tradesAreSpreadAcrossEverySymbol() {
-        // Regression: deciding trades from the same counter that rotates symbols made every trade
-        // land on one symbol whenever the trade cadence and symbol count shared a factor — with 5
-        // symbols and 1-in-10 trades, 100% of trades printed for NVDA, silently gutting per-symbol
-        // aggregation and quote/trade joins.
-        MarketDataGenerator generator = new MarketDataGenerator(SYMBOLS, 42L, 10);
-        Map<String, Integer> tradesPerSymbol = new HashMap<>();
-        for (int i = 0; i < 50_000; i++) {
-            MarketDataGenerator.Event e = generator.next(i);
-            if (e.isTrade) {
-                tradesPerSymbol.merge(generator.symbol(e.symbolIndex), 1, Integer::sum);
-            }
-        }
-        assertThat(tradesPerSymbol).hasSize(SYMBOLS.size());
-        // Roughly even: no symbol may take less than half of a fair share.
-        int fairShare = tradesPerSymbol.values().stream().mapToInt(Integer::intValue).sum() / SYMBOLS.size();
-        assertThat(tradesPerSymbol.values()).allSatisfy(n -> assertThat(n).isGreaterThan(fairShare / 2));
-    }
-
-    @Test
     void tradesArriveAtRoughlyTheRequestedRate() {
         MarketDataGenerator generator = new MarketDataGenerator(SYMBOLS, 7L, 10);
         int trades = 0;

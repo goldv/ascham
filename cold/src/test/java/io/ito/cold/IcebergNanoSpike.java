@@ -85,14 +85,14 @@ class IcebergNanoSpike {
                 writer.close();
                 dataFile = writer.toDataFile();
             }
-            table.newAppend().appendFile(dataFile).set("ito.day", "2026-07-30").commit();
+            table.newAppend().appendFile(dataFile).set("ascham.day", "2026-07-30").commit();
 
             List<Long> nanos = ParquetReadBack.readAll(table).stream()
                     .map(r -> DateTimeUtil.nanosFromTimestamp((java.time.LocalDateTime) r.getField("ts")))
                     .sorted().toList();
             assertThat(nanos).containsExactly(baseNanos, baseNanos + 1, baseNanos + 2);
 
-            assertThat(table.currentSnapshot().summary()).containsEntry("ito.day", "2026-07-30");
+            assertThat(table.currentSnapshot().summary()).containsEntry("ascham.day", "2026-07-30");
             assertThat(dataFile.partition().get(0, Integer.class)).isEqualTo(epochDay);
         }
     }
