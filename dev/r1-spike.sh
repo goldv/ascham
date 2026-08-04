@@ -12,7 +12,7 @@
 # extension built (DUCKDB=… arena-duckdb/scripts/build_extension.sh).
 #
 # Usage: dev/r1-spike.sh [arena_table_dir]
-#   With no argument it generates a throwaway arena segment via :arena:runLiveWriter.
+#   With no argument it generates a throwaway arena segment via :ascham-core:runLiveWriter.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
@@ -27,20 +27,20 @@ trap 'rm -rf "$WORK"' EXIT
 ARENA_TABLE_DIR="${1:-}"
 if [[ -z "$ARENA_TABLE_DIR" ]]; then
     echo "==> generating a throwaway arena segment (6s of mock quotes)"
-    ( cd "$HERE" && ./gradlew -q :arena:runLiveWriter --args="$WORK/arena quotes 400 6" ) >/dev/null 2>&1
+    ( cd "$HERE" && ./gradlew -q :ascham-core:runLiveWriter --args="$WORK/arena quotes 400 6" ) >/dev/null 2>&1
     ARENA_TABLE_DIR="$WORK/arena/quotes"
 fi
 [[ -d "$ARENA_TABLE_DIR" ]] || { echo "no such arena table dir: $ARENA_TABLE_DIR" >&2; exit 1; }
 echo "==> arena source: $ARENA_TABLE_DIR"
 ls -1 "$ARENA_TABLE_DIR" | sed 's/^/    /'
 
-# The day being rolled, derived from the segment file names (<yyyyMMdd>.<seq>.arena).
+# The day being rolled, derived from the segment file names (<yyyyMMdd>.<seq>.ascham).
 DAY_RAW="$(ls -1 "$ARENA_TABLE_DIR" | grep -oE '^[0-9]{8}' | sort -u | head -1)"
 DAY="${DAY_RAW:0:4}-${DAY_RAW:4:2}-${DAY_RAW:6:2}"
 
 # Name that day's segments explicitly, as the roller will: the set archived here is the same list
 # it would later unlink, with no directory re-listing in between (arena_scan's LIST form, R3).
-SEG_FILES="$(ls -1 "$ARENA_TABLE_DIR"/"$DAY_RAW".*.arena)"
+SEG_FILES="$(ls -1 "$ARENA_TABLE_DIR"/"$DAY_RAW".*.ascham)"
 SEG_LIST="$(printf "'%s'," $SEG_FILES | sed 's/,$//')"
 SEG_NAMES="$(basename -a $SEG_FILES | paste -sd, -)"
 echo "==> rolling day $DAY from $(wc -l <<<"$SEG_FILES") segment(s)"

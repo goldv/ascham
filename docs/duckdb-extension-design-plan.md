@@ -49,7 +49,7 @@ messages without an Arrow C++ dependency).
 3. **nanoarrow (vendored amalgamation, 0.8.0) decodes the embedded schema; everything else is
    hand-read per `segment-format.md`.** The layout descriptor gives byte offsets/kinds/widths but
    deliberately not logical types; the embedded Arrow IPC schema message provides logical types
-   and the `arena.*` metadata (`time_column`, `stats_column` — needed to target zone maps).
+   and the `ascham.*` metadata (`time_column`, `stats_column` — needed to target zone maps).
    nanoarrow's IPC decoder turns that flatbuffer into an `ArrowSchema` C-data tree with
    key-value metadata, from which the v1 type profile (13 closed types) maps to DuckDB
    `LogicalType`s by hand. No Arrow C++, no flatbuffers toolchain — the spec's "C++ reader without
@@ -80,8 +80,8 @@ arena-duckdb/
 │   │   ├── segment_header.hpp/.cpp    — magic/version/region-table/hash verify (invariant 7)
 │   │   ├── layout.hpp/.cpp            — LayoutCodec decoder (codec_version 1)
 │   │   ├── catalog.hpp/.cpp           — catalog snapshot w/ acquire loads; bit-63 semantics
-│   │   ├── schema.hpp/.cpp            — nanoarrow IPC schema decode → column types + arena.* keys
-│   │   └── table_dir.hpp/.cpp         — <dir>/<yyyyMMdd>.<seq>.arena discovery (skips *.tmp.*)
+│   │   ├── schema.hpp/.cpp            — nanoarrow IPC schema decode → column types + ascham.* keys
+│   │   └── table_dir.hpp/.cpp         — <dir>/<yyyyMMdd>.<seq>.ascham discovery (skips *.tmp.*)
 │   ├── scan/
 │   │   ├── arena_scan.cpp             — bind/init/scan table function (§4)
 │   │   ├── vector_mapping.cpp         — arena buffers → DuckDB vectors (§5)
@@ -122,7 +122,7 @@ Surface registered by the extension:
 | SQL surface | Purpose |
 |---|---|
 | `arena_scan('<table>')` | scan a table under the configured `arena_dir` |
-| `arena_scan('<path>/…/x.arena')` (file) / `('<dir>')` | scan an explicit segment file or table directory — this is how conformance tests read `conformance/golden/*.bin` |
+| `arena_scan('<path>/…/x.ascham')` (file) / `('<dir>')` | scan an explicit segment file or table directory — this is how conformance tests read `conformance/golden/*.bin` |
 | `SET arena_dir = '/dev/shm/ito'` | extension setting (also readable from env `ARENA_DIR`) |
 | replacement scan | unknown identifier `quotes` → `arena_scan('quotes')` when `<arena_dir>/quotes` exists — makes `SELECT * FROM quotes` just work (CLI, Python, and the Flight server alike) |
 | `arena_segments('<table>')` | diagnostic: one row per segment × batch — day, seq, path, batch index, rows, sealed, ts/stat min-max, seal_nanos, writer epoch, heartbeat — liveness and layout visibility from SQL |
@@ -180,8 +180,8 @@ the mask entirely when the batch's null count is zero — cheap check while buil
 inspected for constant comparisons / `BETWEEN` / `IS NOT NULL` on two special columns discovered
 from schema metadata:
 
-- **`arena.time_column`** → compare against catalog `ts_min`/`ts_max`,
-- **`arena.stats_column`** → compare against `stat_min`/`stat_max`,
+- **`ascham.time_column`** → compare against catalog `ts_min`/`ts_max`,
+- **`ascham.stats_column`** → compare against `stat_min`/`stat_max`,
 
 and each **sealed** batch whose `[min,max]` cannot intersect the filter is dropped from the work
 list before any thread starts (in-progress batches are never skipped — their stats are unpublished
@@ -235,7 +235,7 @@ JSON because DuckDB ingests it natively, making the conformance check a pure-SQL
 | # | Deliverable | Exit criteria / tests |
 |---|---|---|
 | **D1** | `arena-duckdb/` scaffolded from extension-template; duckdb submodule pinned v1.5.5; empty `arena` extension builds; loads in CLI (`-unsigned`) and via `duckdb_jdbc` with `allow_unsigned_extensions` | `make` + `make test` green on the template smoke test; documented build/load runbook |
-| **D2** | Reader core (`format/`): mmap + header verify + layout decode + catalog snapshot (acquire semantics) + nanoarrow schema decode (types + `arena.*` metadata); vendored sha256 | `test/cpp` unit suite green against `conformance/golden/*.bin`; corrupted-magic/hash tests |
+| **D2** | Reader core (`format/`): mmap + header verify + layout decode + catalog snapshot (acquire semantics) + nanoarrow schema decode (types + `ascham.*` metadata); vendored sha256 | `test/cpp` unit suite green against `conformance/golden/*.bin`; corrupted-magic/hash tests |
 | **D3** | `arena_scan` (file + dir forms): bind/schema mapping per §5, sequential scan, zero-copy fixed/validity paths, string_t varlen, bool/decimal conversions; **ns-timestamp + TIME mapping decisions locked** | first conformance sqllogictests green (requires §7 Java emitter, done here); `all_types`/`varlen_*`/`type_bounds` cases pass |
 | **D4** | Pushdown + parallelism: projection column_ids, zone-map batch/segment skipping, parallel work list; `arena_segments` diagnostic | full golden conformance green; pushdown EXPLAIN tests; threads=1 ≡ threads=N; skip-count assertions |
 | **D5** | Replacement scan + `arena_dir` setting/env; live-writer integration | `SELECT * FROM quotes` works in CLI against a running Java writer; `scripts/live_demo_test.sh` green incl. writer-kill consistency |

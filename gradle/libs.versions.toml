@@ -1,4 +1,4 @@
-# Version catalog for ito-db. Versions verified against Maven Central / the Gradle Plugin
+# Version catalog for ascham. Versions verified against Maven Central / the Gradle Plugin
 # Portal at implementation kickoff (2026-07). jmh/jcstress entries are added at their
 # milestones (M2 bench, M4 concurrency) to avoid pulling plugin machinery in early.
 

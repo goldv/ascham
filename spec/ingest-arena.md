@@ -1,8 +1,8 @@
 # Arena — schema-driven shared-memory columnar ingest
 
-> Naming: `arena` is a working module name only. The metadata key prefix (`arena.*`) and the
-> segment magic (`ARENAFMT`) are placeholders — confirm both before M1, since changing the
-> magic after any segment has been written is a format break.
+> Naming: the arena is the hot tier, implemented by the `:ascham-core` module. The metadata key
+> prefix (`ascham.*`) and the segment magic (`ASCHAMFM`) are confirmed, not placeholders —
+> changing either after a segment has been written is a format break.
 
 ## What this is
 
@@ -96,23 +96,23 @@ read it.
 
 | Key | Meaning |
 |---|---|
-| `arena.table` | table name |
-| `arena.schema_version` | integer, bumped on any change |
-| `arena.batch_rows` | target rows per sealed batch (default 65536) |
-| `arena.time_column` | column name used for time-range batch pruning |
-| `arena.stats_column` | integer column used for value-range batch pruning |
+| `ascham.table` | table name |
+| `ascham.schema_version` | integer, bumped on any change |
+| `ascham.batch_rows` | target rows per sealed batch (default 65536) |
+| `ascham.time_column` | column name used for time-range batch pruning |
+| `ascham.stats_column` | integer column used for value-range batch pruning |
 
 **Field-level:**
 
 | Key | Meaning |
 |---|---|
-| `arena.varlen_bytes` | byte capacity per batch for `Utf8`/`Binary` columns (required for those) |
-| `arena.sort_key` | integer ordinal, or absent |
-| `arena.family` | column family name, default `base` |
-| `arena.ref` | for `Int32` columns: name of the ref-data table this code resolves against |
+| `ascham.varlen_bytes` | byte capacity per batch for `Utf8`/`Binary` columns (required for those) |
+| `ascham.sort_key` | integer ordinal, or absent |
+| `ascham.family` | column family name, default `base` |
+| `ascham.ref` | for `Int32` columns: name of the ref-data table this code resolves against |
 
-Validation must be strict and total: a `Utf8` column without `arena.varlen_bytes` is an
-error, `arena.time_column` must name a timestamp column, `arena.stats_column` must name a
+Validation must be strict and total: a `Utf8` column without `ascham.varlen_bytes` is an
+error, `ascham.time_column` must name a timestamp column, `ascham.stats_column` must name a
 fixed-width integer column, and so on. Fail at load, never at append.
 
 ### Layout descriptor
@@ -143,7 +143,7 @@ family id. **All offsets are relative to the batch base**, and every buffer base
 +--------------------+
 ```
 
-**Header** carries: magic `ARENAFMT`, format version, header length, SHA-256 of the
+**Header** carries: magic `ASCHAMFM`, format version, header length, SHA-256 of the
 canonical schema bytes, writer epoch (`int64`), heartbeat counter (`int64`, on its own
 cache line), segment sequence number, arena capacity, and the offset/length of each region.
 
@@ -153,8 +153,8 @@ cache line), segment sequence number, arena capacity, and the offset/length of e
   `length & Long.MAX_VALUE`. Do not use a negative sentinel: `-0 == 0`, so a zero-row
   in-progress batch would be indistinguishable from a sealed empty one.
 - `base_offset` (`uint64`), segment-relative.
-- `ts_min`, `ts_max` — from `arena.time_column`.
-- `stat_min`, `stat_max` — from `arena.stats_column`.
+- `ts_min`, `ts_max` — from `ascham.time_column`.
+- `stat_min`, `stat_max` — from `ascham.stats_column`.
 - `seal_nanos`.
 
 **Two regions, one mechanism.** Sealed batches and the in-progress batch live in the same

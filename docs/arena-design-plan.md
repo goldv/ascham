@@ -18,14 +18,14 @@ overridable at review:
 1. **Decimal128** — in v1 (16-byte fixed-width column), per the spec's type profile.
 2. **Unsigned ints** — in v1. Layout identical to signed; downstream DuckDB/Parquet mapping cost accepted.
 3. **Timestamps** — per-column `ns` or `us` as declared; storage is Int64 either way.
-4. **Varlen capacity seals** — yes: a batch seals when row count reaches `arena.batch_rows` *or*
+4. **Varlen capacity seals** — yes: a batch seals when row count reaches `ascham.batch_rows` *or*
    any varlen column's byte capacity would be exceeded, whichever binds first (spec default).
 5. **Stats** — one designated stats column; fixed 64-byte catalog entries.
 6. **Rotation** — format is rotation-agnostic; v1 policy is one segment per table per UTC day,
    with `rotate()` also firing on capacity exhaustion. Full rotation/retention/liveness is M5.
-7. **Placeholders** — `ARENAFMT` magic, `arena.*` metadata prefix, and the `io.ito.arena` base
-   package are placeholders to confirm **before M1** (magic change after any segment is written is
-   a format break).
+7. **Placeholders** — resolved at the ascham rename: `ASCHAMFM` magic, `ascham.*` metadata prefix,
+   and the `io.ascham` base package are now confirmed (a magic change after any segment is written
+   is a format break).
 
 **One spec deviation requiring sign-off:** the spec bans `MappedByteBuffer` ("2 GB cap") and
 simultaneously mandates `VarHandle` `getAcquire`/`setRelease` — but VarHandles need a `ByteBuffer`
@@ -36,14 +36,15 @@ mapped with Agrona and uses plain stores only, made visible by the catalog relea
 
 ## 2. Build layout
 
-Multi-module from day one (future `:query`/`:cold` tiers slot in beside):
+Multi-module from day one (future `:ascham-query` tiers slot in beside `:ascham-archive`):
 
-- **`:arena`** — the library, plus JMH via the `me.champeau.jmh` plugin (`src/jmh`); benchmarks
-  want package-private access to writer internals, so no separate bench module.
-- **`:arena-jcstress`** — jcstress needs its own subproject (harness forks JVMs, annotation
-  processor shouldn't leak into the library). Depends on `:arena`.
+- **`:ascham-core`** — the library, plus JMH via the `me.champeau.jmh` plugin (`src/jmh`) and the
+  jcstress harness (`src/jcstress`). Benchmarks want package-private access to writer internals, so
+  no separate bench module; and the jcstress plugin confines its annotation processor to the
+  `jcstressAnnotationProcessor` configuration, so it never reaches the library's `compileJava` —
+  which is what previously justified a separate `:arena-jcstress` subproject.
 
-`settings.gradle.kts`: `include("arena"); include("arena-jcstress")`.
+`settings.gradle.kts`: `include("ascham-core")`.
 
 `gradle/libs.versions.toml` (resolved against Maven Central / the Plugin Portal at kickoff, 2026-07):
 agrona 2.5.0, arrow 19.0.0 (`arrow-vector`, `arrow-memory-core`, `arrow-memory-unsafe` runtime-only,
@@ -63,21 +64,21 @@ The Arrow opens fix a `MemoryUtil` initializer error; `sun.nio.ch` is for Agrona
 ```
 
 Tests additionally get `-Darrow.memory.debug.allocator=true` and a configurable segment dir
-(`-Dio.ito.arena.segment.dir=build/segments`) so CI does not depend on `/dev/shm` size (Docker
+(`-Dio.ascham.segment.dir=build/segments`) so CI does not depend on `/dev/shm` size (Docker
 defaults `--shm-size` to 64 MB); only the soak/smoke tests insist on real `/dev/shm`, with a
 size preflight-skip. Java 21 toolchain, no preview features.
 
 ## 3. Package & class design
 
-Base package `io.ito.arena` (placeholder, confirm with `ARENAFMT`):
+Base package `io.ascham`:
 
 ```
-io.ito.arena.schema   — load, validate, canonicalise Arrow schema + arena.* metadata, SHA-256
-io.ito.arena.layout   — pure schema → byte-layout function + descriptor codec
-io.ito.arena.segment  — format constants, header/catalog codecs, mapping, rotation (M5)
-io.ito.arena.write    — SegmentWriter, BatchCursor, Appender, GenericAppender, RollingAppender
-io.ito.arena.read     — SnapshotReader, Snapshot, BatchView, pruning, liveness
-io.ito.arena.util     — Alignment, Sha256
+io.ascham.schema   — load, validate, canonicalise Arrow schema + ascham.* metadata, SHA-256
+io.ascham.layout   — pure schema → byte-layout function + descriptor codec
+io.ascham.segment  — format constants, header/catalog codecs, mapping, rotation (M5)
+io.ascham.write    — SegmentWriter, BatchCursor, Appender, GenericAppender, RollingAppender
+io.ascham.read     — SnapshotReader, Snapshot, BatchView, pruning, liveness
+io.ascham.util     — Alignment, Sha256
 ```
 
 ### schema (M1)
@@ -87,9 +88,9 @@ io.ito.arena.util     — Alignment, Sha256
 - `ColumnMetadata` (record) — `varlenBytes, sortKey, family (default "base"), ref`.
 - `TypeProfile` — the v1 whitelist; `classify(Field) → PhysicalKind`, throws on rejected types with
   the spec's documented rationale for nested/dictionary rejections.
-- `SchemaValidator` — **total** validation: collects *every* error (Utf8 without `arena.varlen_bytes`,
-  `arena.time_column` not a timestamp, `arena.stats_column` not a fixed-width integer, `arena.ref`
-  on non-Int32, duplicate sort keys, unknown `arena.*` keys…) and throws once with the full list.
+- `SchemaValidator` — **total** validation: collects *every* error (Utf8 without `ascham.varlen_bytes`,
+  `ascham.time_column` not a timestamp, `ascham.stats_column` not a fixed-width integer, `ascham.ref`
+  on non-Int32, duplicate sort keys, unknown `ascham.*` keys…) and throws once with the full list.
   Fail at load, never at append.
 - `CanonicalSchema` — canonical IPC schema bytes with metadata keys sorted at both levels (hash
   insensitive to map order); `sha256(ArenaSchema)`.
@@ -110,7 +111,7 @@ io.ito.arena.util     — Alignment, Sha256
 ### segment (M2)
 
 - `SegmentFormat` — every constant in one file, each commented with a pointer to
-  `docs/segment-format.md` and the invariant it serves: `MAGIC="ARENAFMT"`, `FORMAT_VERSION=1`,
+  `docs/segment-format.md` and the invariant it serves: `MAGIC="ASCHAMFM"`, `FORMAT_VERSION=1`,
   `HEADER_LENGTH=4096`; header offsets (magic 0, version 8, headerLen 12, schemaSha256 16,
   segmentSeq 48, capacity 56, epoch 64, **heartbeat 128 — alone on its cache line**, region table
   192 with a **reserved family-watermarks slot**, §4c); `CATALOG_ENTRY_SIZE=64` with entry offsets
@@ -271,7 +272,7 @@ min/max at type bounds (Decimal128 ±(2¹²⁷−1), unsigned maxima).
 tables from §3, bit-63 semantics, little-endian, 64-byte alignment + 4 KiB stride rules, the eight
 invariants verbatim with format-level consequences, type profile + the two documented rejections
 (nested, dictionary), metadata key table, create-time temp-file+rename atomicity, in-progress
-pruning exemption, placeholder confirmations (`ARENAFMT`, `arena.*`, `io.ito.arena`). Gradle
+pruning exemption, placeholder confirmations (`ASCHAMFM`, `ascham.*`, `io.ascham`). Gradle
 skeleton (settings, toml, empty modules) also lands here — it isn't implementation code.
 **Gate: spec review sign-off before M1.**
 
@@ -306,11 +307,12 @@ type via `VectorSchemaRoot`, nulls included), `PruneTest` (in-progress never pru
   through `SnapshotReader`. `regenerateGoldenCorpus` is the one-command regen. (Deferred: a language-
   neutral `expected.json` of row values — byte-stability + Java read-back is the v1 check; the `.bin`
   files are already the cross-language contract.)
-- **jcstress** (`arena-jcstress`): `OffsetsBeforeLengthTest`, `SealBit63Test`, `ValidityByteRmwTest`,
-  `RowCountMonotonicTest` — all 4 pass (no forbidden outcomes). **As built:** they exercise the
-  `getAcquire`/`setRelease` JMM contract directly via `VarHandle` over plain arrays — the exact
-  primitive `ControlRegion` wraps — so they're self-contained (no direct-buffer-per-state cost, no
-  `:arena` dependency). The plugin isn't configuration-cache compatible, so the run task is marked
+- **jcstress** (`ascham-core/src/jcstress`): `OffsetsBeforeLengthTest`, `SealBit63Test`,
+  `ValidityByteRmwTest`, `RowCountMonotonicTest` — all 4 pass (no forbidden outcomes). **As built:**
+  they exercise the `getAcquire`/`setRelease` JMM contract directly via `VarHandle` over plain
+  arrays — the exact primitive `ControlRegion` wraps — so they're self-contained (no
+  direct-buffer-per-state cost, no dependency on the main source set). The plugin isn't
+  configuration-cache compatible, so the run task is marked
   `notCompatibleWithConfigurationCache` (degrades gracefully; cache stays on repo-wide). PR CI runs
   `-m quick`; nightly runs default mode.
 - **JMH** (`src/jmh`, `me.champeau.jmh` plugin): `AppendBenchmark` (`appendRow` = full 14-column row;
@@ -318,14 +320,14 @@ type via `VectorSchemaRoot`, nulls included), `PruneTest` (in-progress never pru
   **Zero-alloc red/green gate as built:** `AllocationTest` (a normal CI test) measures the append
   hot path with `ThreadMXBean.getThreadAllocatedBytes` and asserts `< 1.0 B/op` — more deterministic
   than a forked JMH GC-profiler run and it measures the invariant directly; the JMH benchmarks are
-  on-demand throughput/latency tooling (`./gradlew :arena:jmh`), not a gate.
+  on-demand throughput/latency tooling (`./gradlew :ascham-core:jmh`), not a gate.
 - **Soak** (`SoakTest`): 1 writer + N readers over one segment; each row encodes its global index in
   three columns and readers verify internal consistency (no torn reads), monotonic totals, and
   frozen-snapshot stability. `smoke` (0.5 s) runs in the normal suite; `soak` is `@Tag("soak")`, run
-  by the `soakTest` task (duration via `-Dio.ito.arena.soak.seconds`).
+  by the `soakTest` task (duration via `-Dio.ascham.soak.seconds`).
 
-**M5 — rotation + liveness.** `SegmentDirectory` (`<baseDir>/<table>/<yyyyMMdd>.<seq>.arena` for
-the daily cycle, `<yyyyMMdd>.<HHmm>.<mins>m.<seq>.arena` for sub-day cycles; `/dev/shm/ito` in
+**M5 — rotation + liveness.** `SegmentDirectory` (`<baseDir>/<table>/<yyyyMMdd>.<seq>.ascham` for
+the daily cycle, `<yyyyMMdd>.<HHmm>.<mins>m.<seq>.ascham` for sub-day cycles; `/dev/shm/ito` in
 production) — naming, listing, `nextSeq`, `unlink` (= `shm_unlink`), and a header
 `readEpoch`/`latestEpoch`. `RollCycle` (a duration dividing 24h evenly; `DAILY` default) replaces
 the original `RotationPolicy`/`DailyRotationPolicy` pair — the cycle is encoded in segment names,

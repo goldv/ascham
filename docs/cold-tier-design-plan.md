@@ -24,8 +24,8 @@ Sources: duckdb.org iceberg "Writing to Iceberg" docs; "New DuckDB-Iceberg Featu
 
 > **Revision (2026-08-04): the roll unit is now a configurable roll interval, not a day.**
 > Writers carry a `RollCycle` (a duration dividing 24h evenly — 4h, 6h, 12h, 1d default) and encode
-> each segment's interval in its file name: daily keeps `yyyyMMdd.<seq>.arena` unchanged; sub-day is
-> `yyyyMMdd.HHmm.<mins>m.<seq>.arena`. The roller groups purely by name, merges overlapping declared
+> each segment's interval in its file name: daily keeps `yyyyMMdd.<seq>.ascham` unchanged; sub-day is
+> `yyyyMMdd.HHmm.<mins>m.<seq>.ascham`. The roller groups purely by name, merges overlapping declared
 > intervals (a mid-interval cycle change) into one atomic unit, and commits one interval per
 > transaction — so a completed 4h interval of *today* archives while the writer is live on the next
 > one. The watermark `ascham.rolled-through` is now an **ISO instant** (a bare date from older tables
@@ -40,16 +40,16 @@ Sources: duckdb.org iceberg "Writing to Iceberg" docs; "New DuckDB-Iceberg Featu
 > (iceberg-core/parquet 1.11, no Hadoop beyond the shaded client pair). The DuckDB-embedded
 > executor described in §4/§5 below was built and shipped at R4–R5 and then replaced; DuckDB
 > remains the *query-side* engine, and the integration suite verifies it reads everything the
-> native roll writes. What changed, and where the details now live (`cold/README.md` is current):
+> native roll writes. What changed, and where the details now live (`ascham-archive/README.md` is current):
 >
 > - **Destination-URL-driven catalog**: a local path / `file://` rolls straight to disk through a
 >   serverless `HadoopCatalog` (no services); `http(s)://` is a REST catalog. Bare `s3://`
 >   warehouses are rejected (Hadoop-catalog commits are not atomic on object stores) — S3 goes
 >   through REST.
 > - **`roll_log` is gone.** The watermark is the `ascham.rolled-through` **table property**, committed
->   in the same transaction as the day's data files; ownership is the `ascham.arena-dir` property,
+>   in the same transaction as the day's data files; ownership is the `ascham.ascham-dir` property,
 >   verified on every open. Segment provenance moved into each commit's **snapshot summary**
->   (`ascham.day`, `ascham.segments`, `ascham.arena-dir`, `ascham.rows`) for the future reclaim utility.
+>   (`ascham.day`, `ascham.segments`, `ascham.ascham-dir`, `ascham.rows`) for the future reclaim utility.
 >   Recovery branch 2 of §3.3 ("data committed but unlogged") is structurally impossible now — one
 >   transaction carries data + provenance + watermark — and was deleted.
 > - **File sizing is explicit**: `segmentsPerFile` groups N consecutive same-day segments into one
@@ -108,7 +108,7 @@ Sources: duckdb.org iceberg "Writing to Iceberg" docs; "New DuckDB-Iceberg Featu
                     WRITE PATH                                    READ PATH
  producers ──► RotatingWriter (arena, Java)            Flight SQL server (Java)
                 │  /dev/shm/ito/<table>/                 │ per-query DuckDB conn:
-                │  <yyyyMMdd>.<seq>.arena                │   LOAD arena;  SET arena_dir
+                │  <yyyyMMdd>.<seq>.ascham                │   LOAD arena;  SET arena_dir
                 │  (count-based retention OFF)           │   LOAD iceberg; ATTACH … AS hist
                 ▼                                        │   CREATE VIEW <t> AS <union(cutover)>
          shared-memory segments ◄──────── mmap ──────────┤
@@ -127,7 +127,7 @@ Sources: duckdb.org iceberg "Writing to Iceberg" docs; "New DuckDB-Iceberg Featu
 
 One new Gradle module **`:cold`** (`settings.gradle.kts` already reserves the name). Its only new
 dependency is `org.duckdb:duckdb_jdbc:1.5.5.0` (the same artifact the Flight plan selects) plus the
-built `arena.duckdb_extension` binary — no parquet-mr, no iceberg-core, no hadoop.
+built `ascham.duckdb_extension` binary — no parquet-mr, no iceberg-core, no hadoop.
 
 ## 3. Watermark and cutover — the correctness core
 
@@ -219,7 +219,7 @@ Recovery is idempotent, three branches per (table, day):
    One `INSERT` = one Iceberg snapshot, so presence of any row implies the full day.
 3. else → roll normally.
 
-## 4. The roll pipeline (`io.ito.cold.RollService`)
+## 4. The roll pipeline (`io.ascham.archive.RollService`)
 
 Pull-based, single-threaded per table (tables serial in v1). Triggers: cron-style daily at
 `roll.time` (default 00:15 UTC); on service startup (backlog catch-up); a retry loop with
@@ -229,7 +229,7 @@ asks *which file-days < today exist and are frozen*.
 
 Per run, per table `<base>/<t>`:
 
-1. **Discover.** List segments (`^\d{8}\.\d+\.arena$`, the same rule as C++ `list_segments` and
+1. **Discover.** List segments (`^\d{8}\.\d+\.ascham$`, the same rule as C++ `list_segments` and
    Java `SegmentDirectory.list()`); group by file-day; `pending = { days < today(UTC) }`, sorted
    ascending.
 2. **Freeze check per day D.** Every segment of D must be provably frozen: it is **not the newest
@@ -266,12 +266,12 @@ ALTER TABLE hist.ito.quotes SET PARTITIONED BY (day(ts));
 BEGIN;
 INSERT INTO hist.ito.quotes
   SELECT sym, ts, CAST(size AS BIGINT) AS size, …    -- explicit list; unsigned widening (§7)
-  FROM arena_scan(['/dev/shm/ito/quotes/20260729.0.arena',
-                   '/dev/shm/ito/quotes/20260729.1.arena'])          -- LIST overload (§8.2)
+  FROM arena_scan(['/dev/shm/ito/quotes/20260729.0.ascham',
+                   '/dev/shm/ito/quotes/20260729.1.ascham'])          -- LIST overload (§8.2)
   WHERE ts >= TIMESTAMP '2026-07-29' AND ts < TIMESTAMP '2026-07-30' -- belt-and-braces (I2)
   ORDER BY sym, ts;
 INSERT INTO hist.ito_meta.roll_log
-  VALUES ('quotes', DATE '2026-07-29', <rows>, '20260729.0.arena,20260729.1.arena', now());
+  VALUES ('quotes', DATE '2026-07-29', <rows>, '20260729.0.ascham,20260729.1.ascham', now());
 COMMIT;
 ```
 
@@ -385,7 +385,7 @@ side this table is now implemented by `IcebergTypes` — the Iceberg column carr
 with the widening done by Java copiers instead of SQL casts, and `timestamp_ns` deliberately
 **unzoned** so DuckDB can read it; the DuckDB column remains the query-side scan surface.)*
 
-**Table shape:** partition spec `day(ts)` where `ts` = the table's `arena.time_column`; sort order
+**Table shape:** partition spec `day(ts)` where `ts` = the table's `ascham.time_column`; sort order
 `(sym, ts)`, per-table configurable in `:cold` config (default `(ts)` when there is no symbol
 column), declared as Iceberg sort-order metadata at creation *and* enforced by `ORDER BY` on every
 roll `INSERT`. Properties: `write.target-file-size-bytes = 536870912`,
@@ -461,7 +461,7 @@ extension suites confirm the golden corpus is byte-unchanged.
 
 ### 8.4 `:cold` (new Gradle module)
 
-**Status: implemented (R4 core, R5 reclamation + orchestration).** As built, `io.ito.cold`:
+**Status: implemented (R4 core, R5 reclamation + orchestration).** As built, `io.ascham.archive`:
 
 | Class | Role |
 |---|---|
@@ -472,7 +472,7 @@ extension suites confirm the golden corpus is byte-unchanged.
 | `RollScheduler` | Startup drain, daily cadence, exponential backoff while anything still fails |
 | `RollExecutor` / `DuckDbRollExecutor` | The historical store, behind an interface so the engine stays swappable (§5) |
 | `TypeMapping` | Arena → Iceberg types (§7): the DDL column list and the matching SELECT with widening casts |
-| `ColdConfig` | Arena base dir, catalog coordinates, per-table sort columns, memory limit / temp dir, liveness probe |
+| `ArchiveConfig` | Arena base dir, catalog coordinates, per-table sort columns, memory limit / temp dir, liveness probe |
 
 Only new dependency: `org.duckdb:duckdb_jdbc` (`:cold` also depends on `:arena` for
 `SegmentDirectory`/`SnapshotReader`, so it carries the same `--add-opens` JVM flags).
@@ -534,8 +534,8 @@ cost a debugging round at R1 — worth reading before changing it:
   segments in, real Iceberg warehouse out — against a `HadoopCatalog` on a `@TempDir`, no docker
   and no extension build. Row parity, nanosecond fidelity, per-file sortedness, watermark and
   summary provenance, `segmentsPerFile` grouping, rerun-noop, misaligned-day abort with nothing
-  committed, and crash-orphan invisibility all assert there (`./gradlew :cold:test`).
-  `RestCatalogIT` (`:cold:rollIT`) smokes the same path through Lakekeeper/MinIO and reads the
+  committed, and crash-orphan invisibility all assert there (`./gradlew :ascham-archive:test`).
+  `RestCatalogIT` (`:ascham-archive:rollIT`) smokes the same path through Lakekeeper/MinIO and reads the
   result back through DuckDB's iceberg extension — count and max-nanos exact.
 - **`:cold` integration tests** *(historical R4–R5 shape)*: write days with `RotatingWriter`,
   roll, assert hist row parity + file sortedness + `roll_log` contents; failure injection for all
@@ -553,7 +553,7 @@ cost a debugging round at R1 — worth reading before changing it:
 | **R1** ✅ **done** | Dev stack (`dev/docker-compose.yml`, `dev/catalog-init.sh`, `dev/hist-attach.sql`) + write-path spike `dev/r1-spike.sh`: rolls a real arena segment into a V3 day-partitioned Iceberg table in one transaction with its `roll_log` row, and asserts the result | **All green** — see §10 for the answers. 2,339 rows, arena↔iceberg row parity, ns bounds exact (`…22.689010141`, 2,335 rows carrying sub-µs digits on both sides), format-version 3 + `day` transform stored, partition pruning reads 1 file. Re-runnable as a regression test |
 | **R2** ✅ **done** | Arena hardening: seal-when-finished (`SegmentWriter.sealFinal()` driven by `RotatingWriter`), `Retention.none()` by default + ERROR-logging backstop, rotate-on-heartbeat | **All green** — `SealOnCloseTest` (5), `RetentionPolicyTest` (4), `IdleRotationTest` (2); 85 arena tests total. Cross-language unchanged: C++ reader 15/15 and the extension SQL suite still pass against the same golden corpus. Live-writer check: trailing partial batch now `sealed=true` with published stats, and pruning covers it (kept 7 of 31 batches) |
 | **R3** ✅ **done** | `arena_scan(LIST)` overload (`TableFunctionSet`, two signatures, one bind) | **All green** — 10 new assertions in `scripts/test_extension.sh` (31 total): list == dir scan when it names every segment, single element, pushdown and zone-map pruning intact through the list, directory element expands, and duplicate / empty-list / NULL-entry / NULL-argument all rejected with clear errors |
-| **R4** ✅ **done** | `:cold` module: `TableRoller` (§4 protocol, all three recovery branches), `ArenaInventory` (discovery, freeze check, I2 verification), `DuckDbRollExecutor`, `TypeMapping`, `ColdConfig` | **All green** — 16 unit tests + 8 catalog integration tests (`./gradlew :cold:rollIT`): 2-day round-trip with row parity, per-partition (sym, ts) sortedness, watermark and `roll_log.segments` audit; ns fidelity preserved; re-run is a no-op with zero duplicates; **data-committed-but-unlogged repairs the log instead of re-copying**; a live writer's day is left alone; a misaligned day aborts whole; a 150k-row day sorts by spilling under a 256 MB limit |
+| **R4** ✅ **done** | `:cold` module: `TableRoller` (§4 protocol, all three recovery branches), `ArenaInventory` (discovery, freeze check, I2 verification), `DuckDbRollExecutor`, `TypeMapping`, `ArchiveConfig` | **All green** — 16 unit tests + 8 catalog integration tests (`./gradlew :ascham-archive:rollIT`): 2-day round-trip with row parity, per-partition (sym, ts) sortedness, watermark and `roll_log.segments` audit; ns fidelity preserved; re-run is a no-op with zero duplicates; **data-committed-but-unlogged repairs the log instead of re-copying**; a live writer's day is left alone; a misaligned day aborts whole; a 150k-row day sorts by spilling under a 256 MB limit |
 | **R5** ✅ **done** | `SegmentReclaimer` (grace-gated unlink), `RollService` (multi-table pass + shm-pressure alert), `RollScheduler` (startup drain, daily cadence, backoff retry) | **All green** — 35 cold unit tests + 13 catalog integration tests. Grace-gated unlink verified against the **store's** clock, not the roller's; reclaims only roll-log-named segments; never the newest; rejects path traversal; idempotent; a reader mapped pre-unlink keeps reading. Backlog: 3 writer-down days drain ascending in one pass. Ascending-abort: D−2 fails ⇒ D−3 never attempted, watermark stays at D−1. Multi-table: independent watermarks, one bad table does not block the others |
 | **R5.5** ✅ **done** | Native rewrite (see revision note): `IcebergRollExecutor` + `CatalogFactory` + `IcebergTypes` + `SegmentGroup`/`GroupSorter` replace `DuckDbRollExecutor`/`TypeMapping`; watermark → `ascham.rolled-through` property, provenance → snapshot summaries, `roll_log` and `ito_meta` gone; `SegmentReclaimer` removed (standalone util later); destination-URL catalogs (local dir or REST); `segmentsPerFile` file sizing; declared sort order | **All green** — hermetic `LocalRollTest` (11 tests: parity, ns fidelity, per-file (sym,ts) sortedness, grouping 5→3 files at N=2, rerun-noop, not-frozen, misaligned abort commits nothing, foreign-arena refusal at ensureTable, crash-orphan invisibility, partial-backlog watermark); `RestCatalogIT` rolls through Lakekeeper/MinIO and DuckDB reads back count + max-nanos exact; demo rolls to a plain local directory with no services |
 | **R6** | Unified surface v1: Flight-server views (A) + CutoverTracker; explicit-path docs (C) | continuous union query across a live roll: no dupes/no gaps at every transition; `EXPLAIN ANALYZE` shows arena pruning of rolled-not-unlinked segments; TTL ≪ grace asserted in config validation |
@@ -602,8 +602,8 @@ cost a debugging round at R1 — worth reading before changing it:
 
 **Resolved by R5.5:**
 
-5. ~~Where per-table sort columns live~~ → the schema's own `arena.sort_key` field metadata is now
-   the default source (`ColdConfig.sortColumnsFor` falls back to it before the time column);
+5. ~~Where per-table sort columns live~~ → the schema's own `ascham.sort_key` field metadata is now
+   the default source (`ArchiveConfig.sortColumnsFor` falls back to it before the time column);
    explicit `:cold` config remains as the per-table override.
 6. ~~Declare sort-order metadata vs rely on `ORDER BY`~~ → declared: the native writer sets the
    Iceberg sort order at table creation *and* produces the physical order per file group.

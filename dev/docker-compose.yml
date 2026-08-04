@@ -1,4 +1,4 @@
-# Local dev stack for the ito-db cold tier: an Iceberg REST catalog (Lakekeeper) over
+# Local dev stack for the ascham cold tier: an Iceberg REST catalog (Lakekeeper) over
 # S3-compatible object storage (MinIO). See docs/cold-tier-design-plan.md §9.
 #
 #   docker compose -f dev/docker-compose.yml up -d      # start (idempotent)

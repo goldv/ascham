@@ -55,7 +55,7 @@ Verified up-front (Maven Central / duckdb-java source):
    note, acceptable at demo scale.
 6. **Mock prices are Int64 implied-scale (scale 4), not Decimal128**: allocation-free `setLong`
    hot path; `px` doubles as the trades stats column; avoids Decimal128 rough edges in the Flight
-   JDBC *client* driver. Scale carried as field metadata `demo.price_scale=4` (non-`arena.*` keys
+   JDBC *client* driver. Scale carried as field metadata `demo.price_scale=4` (non-`ascham.*` keys
    pass arena validation untouched).
 7. **Two new modules**: `:flight-server` (library + server main; owns the DuckDB and Flight
    dependencies) and `:demo` (mock writer + clients). Separate demo module because the writer must
@@ -95,13 +95,13 @@ opt-in:
 -Dio.netty.tryReflectionSetAccessible=true
 ```
 
-`JavaExec` task `runServer` (main `io.ito.flight.ArenaFlightServer`, args
-`--dir <baseDir> --port <port>`). `demo/build.gradle.kts`: plain `java`;
+`JavaExec` task `runServer` (main `io.ascham.flight.ArenaFlightServer`, args
+`--dir <baseDir> --port <port>`). `ascham-samples/build.gradle.kts`: plain `java`;
 `implementation(project(":arena"))`, `implementation(libs.arrow.flight.sql)`,
 `runtimeOnly(libs.arrow.flight.sql.jdbc)`; `JavaExec` tasks `runWriter`, `runClient`,
 `runJdbcClient` with the same flags.
 
-## 3. Server classes (`io.ito.flight`)
+## 3. Server classes (`io.ascham.flight`)
 
 ```
 ArenaFlightServer          — main(); FlightServer.builder(allocator, Location.forGrpcInsecure(...), producer)
@@ -114,7 +114,7 @@ exec/DuckDbExecutor        — per-query flow: register streams, execute, export
 - `ArenaFlightServer`: `main(String[])`; `static ArenaFlightServer start(Path baseDir, int port)`
   (port 0 = ephemeral for tests); `port()`; `awaitTermination()`; `close()`. ≈60 lines:
   `RootAllocator` + `TableCatalog` + producer + `FlightServer.builder(...).build().start()`.
-- `TableCatalog`: `tables()` — subdirectories of the base dir containing `*.arena` files;
+- `TableCatalog`: `tables()` — subdirectories of the base dir containing `*.ascham` files;
   `schema(table)` — open the newest segment's `SnapshotReader`, take `schema()`, close (one mmap +
   header parse; caching is a noted v2); `exists(table)`; `directory(table)`. **Hazard, handle
   explicitly:** `SegmentDirectory`'s constructor calls `Files.createDirectories`, so never
@@ -249,7 +249,7 @@ prepare-only metadata (`PreparedStatement.getMetaData()` → hand-mapped to Arro
 for v1 because hand-mapping DuckDB JDBC types (HUGEINT, TIMESTAMP_NS, DECIMAL, UTINYINT…) is a
 correctness surface the LIMIT-0 path avoids entirely.
 
-## 7. Demo writer (`io.ito.demo.MarketDataWriter`)
+## 7. Demo writer (`io.ascham.samples.MarketDataWriter`)
 
 Single-threaded `main()`, one process, two `RotatingWriter`s (arena is single-writer *per table*).
 
@@ -258,27 +258,27 @@ Config: `--dir` (default `/dev/shm/ito` if writable, else `build/segments`), `--
 seals every few seconds keep sealed/unsealed behavior visible), `--max-batches 512`,
 `--retention 4`.
 
-Schemas (`DemoSchemas`, validated `ArenaSchema` factories). **Sizing note: `arena.varlen_bytes` is
+Schemas (`DemoSchemas`, validated `ArenaSchema` factories). **Sizing note: `ascham.varlen_bytes` is
 the per-BATCH byte capacity for the whole column — size it as `batch_rows × max value size`:**
 
 ```
-quotes: arena.table=quotes, arena.schema_version=1, arena.batch_rows=4096, arena.time_column=ts
+quotes: ascham.table=quotes, ascham.schema_version=1, ascham.batch_rows=4096, ascham.time_column=ts
   ts      Timestamp(ns, UTC)
-  sym     Utf8   arena.varlen_bytes=32768   (4096 rows × 8 B)
+  sym     Utf8   ascham.varlen_bytes=32768   (4096 rows × 8 B)
   bid_px  Int64  demo.price_scale=4         (implied 1e-4 fixed point)
   ask_px  Int64  demo.price_scale=4
   bid_sz  Int32
   ask_sz  Int32
-  venue   Utf8   arena.varlen_bytes=32768
+  venue   Utf8   ascham.varlen_bytes=32768
 
-trades: arena.table=trades, ..., arena.time_column=ts, arena.stats_column=px
+trades: ascham.table=trades, ..., ascham.time_column=ts, ascham.stats_column=px
   ts        Timestamp(ns, UTC)
-  sym       Utf8   arena.varlen_bytes=32768
+  sym       Utf8   ascham.varlen_bytes=32768
   px        Int64  demo.price_scale=4
   sz        Int32
-  side      Utf8   arena.varlen_bytes=4096  (4096 × 1 B, "B"/"S")
+  side      Utf8   ascham.varlen_bytes=4096  (4096 × 1 B, "B"/"S")
   trade_id  Int64
-  venue     Utf8   arena.varlen_bytes=32768
+  venue     Utf8   ascham.varlen_bytes=32768
 ```
 
 Generation: per-symbol mid-price random walk (steps ≈ N(0, 2 bps·mid), tick floor), 1–5 tick
@@ -306,8 +306,8 @@ before `append`, setters only inside the lambda. Runs until SIGINT; shutdown hoo
   "jdbc:arrow-flight-sql://localhost:32010/?useEncryption=false")` → plain `Statement`/`ResultSet`
   printing. This is why the prepared-statement surface (§4, F5) exists.
 
-**Runbook:** T1 `./gradlew :demo:runWriter` · T2 `./gradlew :flight-server:runServer` ·
-T3 `./gradlew :demo:runClient` (and `:demo:runJdbcClient`).
+**Runbook:** T1 `./gradlew :ascham-samples:runWriter` · T2 `./gradlew :flight-server:runServer` ·
+T3 `./gradlew :ascham-samples:runClient` (and `:ascham-samples:runJdbcClient`).
 
 ## 9. Testing
 

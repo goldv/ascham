@@ -9,15 +9,16 @@ Companion documents: [`../spec/ingest-arena.md`](../spec/ingest-arena.md) (requi
 [`arena-design-plan.md`](arena-design-plan.md) (design rationale and milestones). Where the design
 plan sketched illustrative offsets, **this document is authoritative.**
 
-## Placeholders (confirm before M1 sign-off)
+## Confirmed identifiers
 
-Three identifiers are placeholders; changing them is cheap now and a format break later.
+These were placeholders through M0; they were confirmed at the ascham rename. Changing any of the
+first two again is a format break.
 
-| Placeholder | Current value | Notes |
+| Identifier | Value | Notes |
 |---|---|---|
-| Segment magic | `ARENAFMT` (8 ASCII bytes) | Changing after any segment is written is a hard format break. |
-| Metadata key prefix | `arena.*` | Carried in the Arrow schema `custom_metadata`. |
-| Java base package | `io.ito.arena` | Not part of the byte contract, but pinned alongside the above. |
+| Segment magic | `ASCHAMFM` (8 ASCII bytes) | Changing after any segment is written is a hard format break. |
+| Metadata key prefix | `ascham.*` | Carried in the Arrow schema `custom_metadata`, so it is hashed into every header. |
+| Java base package | `io.ascham` | Not part of the byte contract, but pinned alongside the above. |
 
 ## Conventions
 
@@ -98,14 +99,14 @@ poll them). All remaining bytes in each line are reserved and MUST be written as
 
 | Offset | Size | Type | Field | Written | Ordering |
 |---|---|---|---|---|---|
-| 0   | 8  | 8×ASCII | `magic` = `ARENAFMT` | at create | plain |
+| 0   | 8  | 8×ASCII | `magic` = `ASCHAMFM` | at create | plain |
 | 8   | 4  | int32 | `format_version` = 1 | at create | plain |
 | 12  | 4  | int32 | `header_length` = 4096 | at create | plain |
 | 16  | 32 | bytes | `schema_sha256` — SHA-256 of the canonical schema bytes | at create | plain |
 | 48  | 8  | int64 | `segment_sequence` — monotonic per (table, rotation) | at create | plain |
 | 56  | 8  | int64 | `arena_capacity` — total file size in bytes | at create | plain |
 | 64  | 8  | int64 | `writer_epoch` — identifies the writing process instance | at create | plain |
-| 72  | 8  | int64 | `batch_rows` — row capacity of each batch (`arena.batch_rows`) | at create | plain |
+| 72  | 8  | int64 | `batch_rows` — row capacity of each batch (`ascham.batch_rows`) | at create | plain |
 | 80  | 8  | int64 | `batch_stride` — bytes reserved per batch | at create | plain |
 | 88  | 40 | — | reserved (zero) | | |
 | 128 | 8  | int64 | `heartbeat` — liveness counter (own cache line) | steady state | **release** / acquire |
@@ -164,7 +165,7 @@ Each **column record**:
 | int64 | `data_offset` | batch-relative, 64-aligned (VARLEN: the byte data buffer) |
 | int64 | `data_capacity_bytes` | |
 | int64 | `offsets_offset` | batch-relative, 64-aligned; `-1` if not VARLEN |
-| int64 | `varlen_capacity_bytes` | `arena.varlen_bytes`; `0` if not VARLEN |
+| int64 | `varlen_capacity_bytes` | `ascham.varlen_bytes`; `0` if not VARLEN |
 
 A reader may cross-check the descriptor against the embedded schema, but the descriptor is
 authoritative for byte offsets.
@@ -180,10 +181,10 @@ zero.
 |---|---|---|---|
 | 0  | 8 | int64  | `length` — see below |
 | 8  | 8 | uint64 | `base_offset` — segment-relative offset of batch `k`'s data (`= data_region_offset + k * batch_stride`) |
-| 16 | 8 | int64  | `ts_min` — min of `arena.time_column` over the batch |
-| 24 | 8 | int64  | `ts_max` — max of `arena.time_column` |
-| 32 | 8 | int64  | `stat_min` — min of `arena.stats_column` (0 if no stats column) |
-| 40 | 8 | int64  | `stat_max` — max of `arena.stats_column` (0 if no stats column) |
+| 16 | 8 | int64  | `ts_min` — min of `ascham.time_column` over the batch |
+| 24 | 8 | int64  | `ts_max` — max of `ascham.time_column` |
+| 32 | 8 | int64  | `stat_min` — min of `ascham.stats_column` (0 if no stats column) |
+| 40 | 8 | int64  | `stat_max` — max of `ascham.stats_column` (0 if no stats column) |
 | 48 | 8 | int64  | `seal_nanos` — wall-clock nanos at seal; 0 while in progress |
 | 56 | 8 | — | reserved (zero) |
 
@@ -313,7 +314,7 @@ Two rejections are deliberate design decisions, not omissions:
 - **No nested types.** Hand-rolled layout for nested data is where correctness bugs live, and the
   reader must be implementable in C++ without an Arrow dependency.
 - **No dictionary encoding.** Low-cardinality identifiers are stored as plain `Int32` codes and
-  resolved against a separate reference-data table (via `arena.ref`). Arrow's dictionary index is
+  resolved against a separate reference-data table (via `ascham.ref`). Arrow's dictionary index is
   positional and stream-local, which breaks stable global identifiers, random access, and
   round-tripping to Parquet.
 
@@ -321,26 +322,26 @@ Two rejections are deliberate design decisions, not omissions:
 
 Carried in the Arrow schema `custom_metadata` (schema level) and each field's metadata (field level),
 rather than a sidecar file — one artifact, and generic Arrow tooling can still read it. Validation is
-strict and total: any unknown `arena.*` key is an error.
+strict and total: any unknown `ascham.*` key is an error.
 
 **Schema-level:**
 
 | Key | Meaning |
 |---|---|
-| `arena.table` | table name (required) |
-| `arena.schema_version` | integer, bumped on any change (required) |
-| `arena.batch_rows` | target rows per sealed batch (default 65536) |
-| `arena.time_column` | timestamp column for time-range pruning (required; drives `ts_min`/`ts_max`) |
-| `arena.stats_column` | fixed-width integer column for value-range pruning (optional; drives `stat_min`/`stat_max`) |
+| `ascham.table` | table name (required) |
+| `ascham.schema_version` | integer, bumped on any change (required) |
+| `ascham.batch_rows` | target rows per sealed batch (default 65536) |
+| `ascham.time_column` | timestamp column for time-range pruning (required; drives `ts_min`/`ts_max`) |
+| `ascham.stats_column` | fixed-width integer column for value-range pruning (optional; drives `stat_min`/`stat_max`) |
 
 **Field-level:**
 
 | Key | Meaning |
 |---|---|
-| `arena.varlen_bytes` | byte capacity per batch for `Utf8`/`Binary` columns (required for those, forbidden on others) |
-| `arena.sort_key` | integer ordinal, unique across columns, or absent |
-| `arena.family` | column-family name, default `base` |
-| `arena.ref` | for signed `Int32` columns: name of the ref-data table this code resolves against |
+| `ascham.varlen_bytes` | byte capacity per batch for `Utf8`/`Binary` columns (required for those, forbidden on others) |
+| `ascham.sort_key` | integer ordinal, unique across columns, or absent |
+| `ascham.family` | column-family name, default `base` |
+| `ascham.ref` | for signed `Int32` columns: name of the ref-data table this code resolves against |
 
 ## Invariants (correctness core)
 

@@ -1,11 +1,11 @@
 # dev/ — local cold-tier stack
 
-Local Iceberg REST catalog (Lakekeeper) over S3-compatible storage (MinIO) for the ito-db cold
+Local Iceberg REST catalog (Lakekeeper) over S3-compatible storage (MinIO) for the ascham cold
 tier. Design: [`../docs/cold-tier-design-plan.md`](../docs/cold-tier-design-plan.md).
 
 Since R5.5 the roller itself is pure Java (native Iceberg API) and **needs neither DuckDB nor the
 arena extension** — it can even roll to a plain local directory with no stack at all
-(`./gradlew :demo:roll`). This stack is the REST/S3 integration target (`./gradlew :cold:rollIT`)
+(`./gradlew :ascham-samples:roll`). This stack is the REST/S3 integration target (`./gradlew :ascham-archive:rollIT`)
 and the DuckDB *query* surface over what the roller writes.
 
 ## Start / stop
@@ -47,7 +47,7 @@ through DuckDB), but still a useful regression test of the *DuckDB side*: extens
 v3 DDL, and ns round-tripping in the query engine.
 
 ```sh
-dev/r1-spike.sh                      # generates a throwaway arena segment via :arena:runLiveWriter
+dev/r1-spike.sh                      # generates a throwaway arena segment via :ascham-core:runLiveWriter
 dev/r1-spike.sh /dev/shm/ito/quotes  # or roll an existing arena table dir
 ```
 
