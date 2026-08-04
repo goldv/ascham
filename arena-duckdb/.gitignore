@@ -1,6 +1,0 @@
-# Reader-core build output (Makefile).
-/build/
-
-# DuckDB extension build (future, CMake) and the pinned submodule checkout.
-/cmake-build-*/
-/duckdb/
