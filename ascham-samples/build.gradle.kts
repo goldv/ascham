@@ -10,8 +10,6 @@ java {
 
 dependencies {
     api(project(":ascham-core"))
-    // The roll demo drives the cold tier; the writer and backfill do not need it.
-    implementation(project(":ascham-archive"))
 
     testImplementation(platform(libs.junit.bom))
     testImplementation(libs.junit.jupiter)
@@ -44,16 +42,6 @@ tasks.register<JavaExec>("runWriter") {
     classpath = sourceSets["main"].runtimeClasspath
     jvmArgs = demoJvmArgs
     standardInput = System.`in`
-}
-
-/** Roll whatever the demo has written into an Iceberg warehouse. Defaults to a local warehouse
- *  under build/; pass --args="--dest http://localhost:8181/catalog" to use the dev/ REST stack. */
-tasks.register<JavaExec>("roll") {
-    group = "demo"
-    description = "Roll demo data from the arena into an Iceberg warehouse (local dir or REST)"
-    mainClass = "io.ascham.samples.RollDemoMain"
-    classpath = sourceSets["main"].runtimeClasspath
-    jvmArgs = demoJvmArgs
 }
 
 /** Backfill completed past days so the cold-tier roll has something real to archive. */

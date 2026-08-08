@@ -27,6 +27,8 @@ dependencies {
     // `provided` dependencies. Deliberately not full hadoop-common.
     implementation(libs.hadoop.client.api)
     runtimeOnly(libs.hadoop.client.runtime)
+    // The AschamArchiveCli command line; internal to the module, nothing leaks into the API.
+    implementation(libs.picocli)
 
     testImplementation(platform(libs.junit.bom))
     testImplementation(libs.junit.jupiter)
@@ -65,4 +67,21 @@ tasks.register<Test>("rollIT") {
     useJUnitPlatform { includeTags("catalog") }
     jvmArgs(aschamJvmArgs)
     outputs.upToDateWhen { false } // always re-run: the catalog is external state
+}
+
+/** The cold-tier CLI. The subcommand goes inside --args (Gradle's --args replaces any configured
+ *  args, so nothing is baked in here):
+ *    ./gradlew :ascham-archive:archive --args="roll --arena-dir /dev/shm/ito --dest build/warehouse"
+ *    ./gradlew :ascham-archive:archive --args="roll --help"
+ */
+tasks.register<JavaExec>("archive") {
+    group = "cli"
+    description = "Run the ascham-archive CLI (pass --args=\"--help\" for usage)"
+    mainClass = "io.ascham.archive.cli.AschamArchiveCli"
+    classpath = sourceSets["main"].runtimeClasspath
+    // One-line logs, or Iceberg/Hadoop JUL noise buries the roll report.
+    jvmArgs = aschamJvmArgs + listOf(
+        "-Djava.util.logging.config.file=" + file("src/main/resources/logging.properties").absolutePath,
+    )
+    standardInput = System.`in` // the interactive --s3-secret prompt reads from here
 }

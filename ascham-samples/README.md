@@ -14,9 +14,12 @@ duckdb -unsigned -c "LOAD 'arena-duckdb/build/arena.duckdb_extension';
                      SET arena_dir='/dev/shm/ito';
                      SELECT sym, count(*) n, sum(sz) volume FROM trades GROUP BY sym ORDER BY volume DESC"
 
-# Roll them into Iceberg and reclaim the shared memory (needs the dev stack).
+# Roll them into Iceberg — a local warehouse under ascham-archive/build/, no services needed.
+./gradlew :ascham-archive:archive --args="roll --arena-dir /dev/shm/ito --dest build/warehouse"
+
+# Or roll into the dev REST stack instead.
 docker compose -f dev/docker-compose.yml up -d
-./gradlew :ascham-samples:roll
+./gradlew :ascham-archive:archive --args="roll --arena-dir /dev/shm/ito --dest http://localhost:8181/catalog"
 ```
 
 For a live feed instead of a backfill:

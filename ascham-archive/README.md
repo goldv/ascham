@@ -106,6 +106,31 @@ try (RollScheduler scheduler = new RollScheduler(service, Duration.ofHours(4), C
 }
 ```
 
+## CLI
+
+`AschamArchiveCli` (`io.ascham.archive.cli`) drives the roll from the command line — one pass per
+invocation, idempotent, so cron/systemd-timer scheduling is just "run it again". Reclamation and
+cutover are the anticipated next subcommands.
+
+```sh
+./gradlew :ascham-archive:archive --args="roll --arena-dir /dev/shm/ito --dest build/warehouse"
+./gradlew :ascham-archive:archive --args="roll --arena-dir /dev/shm/ito --dest http://localhost:8181/catalog"
+./gradlew :ascham-archive:archive --args="roll --help"     # the full, documented option set
+```
+
+Every `ArchiveConfig` knob is an option — `--warehouse`, `--namespace`, `--sort table=col,col`,
+`--catalog-property k=v`, `--max-segments-per-file`, `--target-file-size 512m`,
+`--liveness-probe 5s` — plus `--arena-alert-bytes` for the arena-pressure ERROR log and `--quiet`.
+S3 credentials come from `--s3-endpoint/--s3-key-id/--s3-secret` or their `ITO_S3_ENDPOINT` /
+`ITO_S3_KEY_ID` / `ITO_S3_SECRET` env fallbacks (usually unnecessary: a REST catalog vends scoped
+credentials). Exit codes: 0 success, 1 a table failed or the catalog could not be opened, 2 usage
+error.
+
+Anyone launching `java -cp` directly instead of the gradle task must pass the arena's JVM flags
+(`--add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED
+--add-opens=java.base/sun.nio.ch=ALL-UNNAMED`, see build.gradle.kts) or segment mapping fails at
+startup.
+
 ## Reclamation (future utility)
 
 The roll never deletes arena data — it only records, in every commit's snapshot summary, exactly

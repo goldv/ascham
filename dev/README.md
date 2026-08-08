@@ -5,7 +5,8 @@ tier. Design: [`../docs/cold-tier-design-plan.md`](../docs/cold-tier-design-plan
 
 Since R5.5 the roller itself is pure Java (native Iceberg API) and **needs neither DuckDB nor the
 arena extension** — it can even roll to a plain local directory with no stack at all
-(`./gradlew :ascham-samples:roll`). This stack is the REST/S3 integration target (`./gradlew :ascham-archive:rollIT`)
+(`./gradlew :ascham-archive:archive --args="roll --arena-dir /dev/shm/ito --dest build/warehouse"`).
+This stack is the REST/S3 integration target (`./gradlew :ascham-archive:rollIT`)
 and the DuckDB *query* surface over what the roller writes.
 
 ## Start / stop

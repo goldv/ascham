@@ -25,6 +25,8 @@ hadoop = "3.4.1"
 # consumer compile classpath, but Parquet.writeData's createWriterFunc signature needs MessageType.
 # Must match the version iceberg-parquet resolves at runtime.
 parquet = "1.17.1"
+# picocli: argument parsing for the ascham-archive CLI. A single jar with no transitive deps.
+picocli = "4.7.7"
 
 [libraries]
 agrona = { module = "org.agrona:agrona", version.ref = "agrona" }
@@ -49,6 +51,7 @@ iceberg-aws-bundle = { module = "org.apache.iceberg:iceberg-aws-bundle", version
 hadoop-client-api = { module = "org.apache.hadoop:hadoop-client-api", version.ref = "hadoop" }
 hadoop-client-runtime = { module = "org.apache.hadoop:hadoop-client-runtime", version.ref = "hadoop" }
 parquet-column = { module = "org.apache.parquet:parquet-column", version.ref = "parquet" }
+picocli = { module = "info.picocli:picocli", version.ref = "picocli" }
 
 [plugins]
 jmh = { id = "me.champeau.jmh", version.ref = "jmh-plugin" }
