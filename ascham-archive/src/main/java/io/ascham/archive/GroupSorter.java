@@ -5,25 +5,12 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import org.apache.arrow.vector.BigIntVector;
-import org.apache.arrow.vector.BitVector;
-import org.apache.arrow.vector.DateDayVector;
-import org.apache.arrow.vector.FieldVector;
-import org.apache.arrow.vector.Float4Vector;
-import org.apache.arrow.vector.Float8Vector;
-import org.apache.arrow.vector.IntVector;
-import org.apache.arrow.vector.SmallIntVector;
-import org.apache.arrow.vector.TimeNanoVector;
-import org.apache.arrow.vector.TimeStampVector;
-import org.apache.arrow.vector.TinyIntVector;
-import org.apache.arrow.vector.UInt1Vector;
-import org.apache.arrow.vector.UInt2Vector;
-import org.apache.arrow.vector.UInt4Vector;
-import org.apache.arrow.vector.UInt8Vector;
-import org.apache.arrow.vector.VarBinaryVector;
-import org.apache.arrow.vector.VarCharVector;
-import org.apache.arrow.vector.VectorSchemaRoot;
+import java.util.stream.IntStream;
+
+import org.agrona.collections.Object2IntHashMap;
+import org.apache.arrow.vector.*;
 import org.apache.arrow.vector.types.pojo.ArrowType;
+import shaded.parquet.it.unimi.dsi.fastutil.objects.Object2IntMap;
 
 /**
  * The native index sort: orders a {@link SegmentGroup}'s rows by the configured sort columns
@@ -148,33 +135,34 @@ final class GroupSorter {
     private static long[] rankKeys(SegmentGroup group, int ordinal) {
         int n = group.rowCount();
         int[] ids = new int[n];
-        Map<ByteKey, Integer> distinct = new HashMap<>();
+        Object2IntHashMap<ByteKey> distinct = new Object2IntHashMap<>(-1);
+
         for (int b = 0; b < group.batchCount(); b++) {
             VectorSchemaRoot root = group.root(b);
-            FieldVector vector = root.getVector(ordinal);
+            var vector = (BaseVariableWidthVector) root.getVector(ordinal);
             int start = group.batchStart(b);
-            for (int row = 0; row < root.getRowCount(); row++) {
+            int rows = root.getRowCount();
+            for (int row = 0; row < rows; row++) {
                 if (vector.isNull(row)) {
                     ids[start + row] = -1;
                     continue;
                 }
-                byte[] value = vector instanceof VarCharVector vc
-                        ? vc.get(row)
-                        : ((VarBinaryVector) vector).get(row);
-                ids[start + row] = distinct.computeIfAbsent(new ByteKey(value), k -> distinct.size());
+                ByteKey key = new ByteKey(vector.get(row));
+                int id = distinct.getValue(key);
+                if (id == distinct.missingValue()) {
+                    id = distinct.size();
+                    distinct.put(key, id);
+                }
+                ids[start + row] = id;
             }
         }
 
-        ByteKey[] values = new ByteKey[distinct.size()];
-        distinct.forEach((key, id) -> values[id] = key);
-        Integer[] order = new Integer[values.length];
-        for (int i = 0; i < order.length; i++) {
-            order[i] = i;
-        }
-        Arrays.sort(order, (a, c) -> Arrays.compareUnsigned(values[a].bytes, values[c].bytes));
+        ByteKey[] values = distinct.keySet().toArray(new ByteKey[0]);
+        Arrays.sort(values, (a, c) -> Arrays.compareUnsigned(a.bytes, c.bytes));
+
         long[] rankOf = new long[values.length];
-        for (int rank = 0; rank < order.length; rank++) {
-            rankOf[order[rank]] = rank;
+        for (int rank = 0; rank < values.length; rank++) {
+            rankOf[distinct.get(values[rank])] = rank;
         }
 
         long[] keys = new long[n];
@@ -187,7 +175,7 @@ final class GroupSorter {
     private record ByteKey(byte[] bytes) {
         @Override
         public boolean equals(Object o) {
-            return o instanceof ByteKey other && Arrays.equals(bytes, other.bytes);
+            return o instanceof ByteKey(byte[] bytes1) && Arrays.equals(bytes, bytes1);
         }
 
         @Override
