@@ -97,33 +97,35 @@ Fields are grouped by cache line (64 bytes). The **heartbeat** and **active_batc
 their own cache line to avoid false sharing (invariant / risk: the writer updates them while readers
 poll them). All remaining bytes in each line are reserved and MUST be written as zero.
 
+<!-- BEGIN GENERATED: header-table -->
 | Offset | Size | Type | Field | Written | Ordering |
 |---|---|---|---|---|---|
-| 0   | 8  | 8×ASCII | `magic` = `ASCHAMFM` | at create | plain |
-| 8   | 4  | int32 | `format_version` = 1 | at create | plain |
-| 12  | 4  | int32 | `header_length` = 4096 | at create | plain |
-| 16  | 32 | bytes | `schema_sha256` — SHA-256 of the canonical schema bytes | at create | plain |
-| 48  | 8  | int64 | `segment_sequence` — monotonic per (table, rotation) | at create | plain |
-| 56  | 8  | int64 | `arena_capacity` — total file size in bytes | at create | plain |
-| 64  | 8  | int64 | `writer_epoch` — identifies the writing process instance | at create | plain |
-| 72  | 8  | int64 | `batch_rows` — row capacity of each batch (`ascham.batch_rows`) | at create | plain |
-| 80  | 8  | int64 | `batch_stride` — bytes reserved per batch | at create | plain |
-| 88  | 40 | — | reserved (zero) | | |
-| 128 | 8  | int64 | `heartbeat` — liveness counter (own cache line) | steady state | **release** / acquire |
+| 0 | 8 | 8×ASCII | `magic` = `ASCHAMFM` | at create | plain |
+| 8 | 4 | int32 | `format_version` = 1 | at create | plain |
+| 12 | 4 | int32 | `header_length` = 4096 | at create | plain |
+| 16 | 32 | bytes | `schema_sha256` — SHA-256 of the canonical schema bytes | at create | plain |
+| 48 | 8 | int64 | `segment_sequence` — monotonic per (table, rotation) | at create | plain |
+| 56 | 8 | int64 | `arena_capacity` — total file size in bytes | at create | plain |
+| 64 | 8 | int64 | `writer_epoch` — identifies the writing process instance | at create | plain |
+| 72 | 8 | int64 | `batch_rows` — row capacity of each batch (`ascham.batch_rows`) | at create | plain |
+| 80 | 8 | int64 | `batch_stride` — bytes reserved per batch | at create | plain |
+| 88 | 40 | — | reserved (zero) | | |
+| 128 | 8 | int64 | `heartbeat` — liveness counter (own cache line) | steady state | **release** / acquire |
 | 136 | 56 | — | reserved (zero) | | |
-| 192 | 8  | int64 | `active_batch_count` — number of catalog entries opened (own cache line) | per batch open | **release** / acquire |
+| 192 | 8 | int64 | `active_batch_count` — number of catalog entries opened (own cache line) | per batch open | **release** / acquire |
 | 200 | 56 | — | reserved (zero) | | |
-| 256 | 8  | int64 | `schema_region_offset` | at create | plain |
-| 264 | 8  | int64 | `schema_region_length` | at create | plain |
-| 272 | 8  | int64 | `layout_region_offset` | at create | plain |
-| 280 | 8  | int64 | `layout_region_length` | at create | plain |
-| 288 | 8  | int64 | `catalog_region_offset` | at create | plain |
-| 296 | 8  | int64 | `catalog_region_length` | at create | plain |
-| 304 | 8  | int64 | `data_region_offset` | at create | plain |
-| 312 | 8  | int64 | `data_region_length` | at create | plain |
-| 320 | 8  | int64 | `family_watermarks_region_offset` (reserved, 0 in v1) | at create | plain |
-| 328 | 8  | int64 | `family_watermarks_region_length` (reserved, 0 in v1) | at create | plain |
+| 256 | 8 | int64 | `schema_region_offset` | at create | plain |
+| 264 | 8 | int64 | `schema_region_length` | at create | plain |
+| 272 | 8 | int64 | `layout_region_offset` | at create | plain |
+| 280 | 8 | int64 | `layout_region_length` | at create | plain |
+| 288 | 8 | int64 | `catalog_region_offset` | at create | plain |
+| 296 | 8 | int64 | `catalog_region_length` | at create | plain |
+| 304 | 8 | int64 | `data_region_offset` | at create | plain |
+| 312 | 8 | int64 | `data_region_length` | at create | plain |
+| 320 | 8 | int64 | `family_watermarks_region_offset` (reserved, 0 in v1) | at create | plain |
+| 328 | 8 | int64 | `family_watermarks_region_length` (reserved, 0 in v1) | at create | plain |
 | 336 | 3760 | — | reserved (zero) | | |
+<!-- END GENERATED: header-table -->
 
 `schema_sha256` is re-verified at open against a SHA-256 computed over the embedded schema region; a
 mismatch is a hard failure (invariant 7).
@@ -177,16 +179,18 @@ the single in-progress entry is naturally isolated from sealed ones — invarian
 line"). Entry `k` describes batch `k`. Entries `[0, active_batch_count)` are live; the rest are
 zero.
 
+<!-- BEGIN GENERATED: catalog-table -->
 | Offset | Size | Type | Field |
 |---|---|---|---|
-| 0  | 8 | int64  | `length` — see below |
-| 8  | 8 | uint64 | `base_offset` — segment-relative offset of batch `k`'s data (`= data_region_offset + k * batch_stride`) |
+| 0 | 8 | int64  | `length` — bit 63 set = in progress; row count in bits 0..62; the segment's sole publication point |
+| 8 | 8 | uint64  | `base_offset` — segment-relative offset of batch `k`'s data (`= data_region_offset + k * batch_stride`) |
 | 16 | 8 | int64  | `ts_min` — min of `ascham.time_column` over the batch |
 | 24 | 8 | int64  | `ts_max` — max of `ascham.time_column` |
 | 32 | 8 | int64  | `stat_min` — min of `ascham.stats_column` (0 if no stats column) |
 | 40 | 8 | int64  | `stat_max` — max of `ascham.stats_column` (0 if no stats column) |
 | 48 | 8 | int64  | `seal_nanos` — wall-clock nanos at seal; 0 while in progress |
 | 56 | 8 | — | reserved (zero) |
+<!-- END GENERATED: catalog-table -->
 
 **`length` and the in-progress bit.** Bit 63 set means the batch is still accumulating. The row count
 is `length & Long.MAX_VALUE`. A negative sentinel is deliberately **not** used: `-0 == 0`, so a
@@ -302,12 +306,36 @@ advances.
 
 Accept exactly these; reject anything else at **load** with a clear error (never fail at append):
 
-`Bool`, `Int8/16/32/64`, `UInt8/16/32/64`, `Float32`, `Float64`, `Decimal128(p,s)`, `Date32`,
-`Time64(ns)`, `Timestamp(ns|us, tz)`, `FixedSizeBinary(n)`, `Utf8`, `Binary`.
+<!-- BEGIN GENERATED: type-profile -->
+| Arrow type | Physical kind | Element width | Notes |
+|---|---|---|---|
+| `Bool` | BOOL_BITMAP | — |  |
+| `Int8` | FIXED | 1 |  |
+| `Int16` | FIXED | 2 |  |
+| `Int32` | FIXED | 4 |  |
+| `Int64` | FIXED | 8 |  |
+| `UInt8` | FIXED | 1 |  |
+| `UInt16` | FIXED | 2 |  |
+| `UInt32` | FIXED | 4 |  |
+| `UInt64` | FIXED | 8 |  |
+| `Float32` | FIXED | 4 |  |
+| `Float64` | FIXED | 8 |  |
+| `Decimal128(38,9)` | FIXED | 16 |  |
+| `Date32` | FIXED | 4 |  |
+| `Time64(nanosecond)` | FIXED | 8 |  |
+| `Timestamp(nanosecond, tz=UTC)` | FIXED | 8 |  |
+| `Timestamp(microsecond, tz=UTC)` | FIXED | 8 |  |
+| `Timestamp(nanosecond)` | FIXED | 8 |  |
+| `Timestamp(microsecond)` | FIXED | 8 |  |
+| `FixedSizeBinary(1)` | FIXED | 1 |  |
+| `FixedSizeBinary(7)` | FIXED | 7 |  |
+| `FixedSizeBinary(16)` | FIXED | 16 |  |
+| `FixedSizeBinary(33)` | FIXED | 33 |  |
+| `Utf8` | VARLEN | — | requires `ascham.varlen_bytes` |
+| `Binary` | VARLEN | — | requires `ascham.varlen_bytes` |
 
-Rejected in v1: `List`, `LargeList`, `Struct`, `Map`, `Union`, `Dictionary`, `LargeUtf8`,
-`LargeBinary`, `Interval`, `Duration`, `Null`, and out-of-profile variants (`Float16`, `Decimal256`,
-`Date64`, `Time32`, non-ns/us `Timestamp`).
+Rejected in v1: `Float16`, `Decimal256`, `Date64`, `Time32`, `Time64`, `Timestamp`, `Timestamp`, `LargeUtf8`, `LargeBinary`, `Duration`, `Interval`, `Null`, `List`, `Struct`, `Map`, `Dictionary`.
+<!-- END GENERATED: type-profile -->
 
 Two rejections are deliberate design decisions, not omissions:
 
@@ -324,6 +352,7 @@ Carried in the Arrow schema `custom_metadata` (schema level) and each field's me
 rather than a sidecar file — one artifact, and generic Arrow tooling can still read it. Validation is
 strict and total: any unknown `ascham.*` key is an error.
 
+<!-- BEGIN GENERATED: metadata-tables -->
 **Schema-level:**
 
 | Key | Meaning |
@@ -342,6 +371,7 @@ strict and total: any unknown `ascham.*` key is an error.
 | `ascham.sort_key` | integer ordinal, unique across columns, or absent |
 | `ascham.family` | column-family name, default `base` |
 | `ascham.ref` | for signed `Int32` columns: name of the ref-data table this code resolves against |
+<!-- END GENERATED: metadata-tables -->
 
 ## Invariants (correctness core)
 

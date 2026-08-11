@@ -1,5 +1,6 @@
 package io.ascham.layout;
 
+import io.ascham.segment.SegmentFormat;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -16,7 +17,6 @@ import org.agrona.MutableDirectBuffer;
 public final class LayoutCodec {
 
     private static final ByteOrder ORDER = ByteOrder.LITTLE_ENDIAN;
-    private static final int CODEC_VERSION = 1;
 
     private LayoutCodec() {
     }
@@ -42,7 +42,7 @@ public final class LayoutCodec {
     /** Encodes {@code descriptor} into {@code buffer} at {@code offset}; returns bytes written. */
     public static int encode(LayoutDescriptor descriptor, MutableDirectBuffer buffer, int offset) {
         Cursor c = new Cursor(offset);
-        putInt(buffer, c, CODEC_VERSION);
+        putInt(buffer, c, SegmentFormat.LAYOUT_CODEC_VERSION);
         putInt(buffer, c, descriptor.batchRows());
         putLong(buffer, c, descriptor.batchStrideBytes());
 
@@ -55,7 +55,7 @@ public final class LayoutCodec {
         for (ColumnLayout column : descriptor.columns()) {
             putString(buffer, c, column.name());
             putInt(buffer, c, column.ordinal());
-            putInt(buffer, c, column.kind().ordinal());
+            putInt(buffer, c, column.kind().wireValue());
             putInt(buffer, c, column.familyId());
             putInt(buffer, c, column.elementWidth());
             putLong(buffer, c, column.validityOffset());
@@ -71,7 +71,7 @@ public final class LayoutCodec {
     public static LayoutDescriptor decode(DirectBuffer buffer, int offset, int length) {
         Cursor c = new Cursor(offset);
         int version = getInt(buffer, c);
-        if (version != CODEC_VERSION) {
+        if (version != SegmentFormat.LAYOUT_CODEC_VERSION) {
             throw new IllegalArgumentException("unsupported layout codec version: " + version);
         }
         int batchRows = getInt(buffer, c);
@@ -88,7 +88,7 @@ public final class LayoutCodec {
         for (int i = 0; i < columnCount; i++) {
             String name = getString(buffer, c);
             int ordinal = getInt(buffer, c);
-            PhysicalKind kind = PhysicalKind.values()[getInt(buffer, c)];
+            PhysicalKind kind = PhysicalKind.fromWire(getInt(buffer, c));
             int familyId = getInt(buffer, c);
             int elementWidth = getInt(buffer, c);
             long validity = getLong(buffer, c);

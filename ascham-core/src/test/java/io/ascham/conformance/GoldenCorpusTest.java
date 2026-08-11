@@ -53,5 +53,10 @@ class GoldenCorpusTest {
             int totalRows = snapshot.batches().stream().mapToInt(v -> v.rowCount()).sum();
             assertThat(totalRows).as("total rows in '%s'", c.name()).isEqualTo(c.expectedTotalRows());
         }
+
+        // 4. The checked-in segment decodes to exactly the checked-in expected values.
+        assertThat(CsvExpected.render(golden))
+                .as("expected-value CSV for '%s'", c.name())
+                .isEqualTo(Files.readString(CONFORMANCE_DIR.resolve("expected").resolve(c.name() + ".csv")));
     }
 }

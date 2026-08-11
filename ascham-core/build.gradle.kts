@@ -72,11 +72,36 @@ tasks.register<Test>("soakTest") {
     systemProperty("io.ascham.conformance.dir", conformanceDir.absolutePath)
 }
 
+// The format-contract constants (SegmentFormat, PhysicalKind, MetadataKeys) are generated from
+// spec/format-manifest.toml. `check` fails on drift so a hand-edit to a generated file — or a
+// manifest change without regeneration — cannot land. Requires python3 >= 3.11 (stdlib tomllib).
+tasks.register<Exec>("checkFormatGenerated") {
+    group = "verification"
+    description = "Verify generated format-contract files match spec/format-manifest.toml"
+    workingDir = rootDir
+    commandLine("python3", "spec/generate_format.py", "--lang", "java", "--repo", ".", "--check")
+}
+
+tasks.named("check") {
+    dependsOn("checkFormatGenerated")
+}
+
 // Regenerates the golden corpus. Run manually; any diff to the checked-in files is a format change.
 tasks.register<JavaExec>("regenerateGoldenCorpus") {
     group = "conformance"
     description = "Regenerate the golden byte corpus under conformance/"
     mainClass = "io.ascham.conformance.GoldenCorpusGenerator"
+    classpath = sourceSets["test"].runtimeClasspath
+    jvmArgs = aschamJvmArgs
+    args(conformanceDir.absolutePath)
+}
+
+// Regenerates the layout conformance vectors (schema → LayoutCodec descriptor bytes). Run manually;
+// any diff is a layout-derivation change, i.e. a format change (bump LAYOUT_CODEC_VERSION).
+tasks.register<JavaExec>("regenerateLayoutVectors") {
+    group = "conformance"
+    description = "Regenerate conformance/layout_vectors.jsonl"
+    mainClass = "io.ascham.layout.LayoutVectorGenerator"
     classpath = sourceSets["test"].runtimeClasspath
     jvmArgs = aschamJvmArgs
     args(conformanceDir.absolutePath)

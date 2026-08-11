@@ -1,0 +1,181 @@
+# ascham segment-format contract — the single machine-readable source of truth.
+#
+# Everything a language binding must agree on byte-for-byte lives here: header and catalog field
+# offsets (with their memory-ordering attributes), the region table, enums with explicit wire
+# values, the v1 type profile, the ascham.* metadata key set, and the segment filename grammar.
+#
+# spec/generate_format.py turns this file into:
+#   - Java:  SegmentFormat.java, PhysicalKind.java, MetadataKeys.java      (this repo)
+#   - C++:   src/format/arena_format_gen.hpp                               (arrow_rdb)
+#   - conformance/type_profile_vectors.json                                (cross-language test vectors)
+#   - the marked tables in docs/segment-format.md
+#
+# Generated files are checked in; `generate_format.py --check` re-derives them and fails on drift
+# (wired into `gradlew check` here and the conformance CI job in arrow_rdb). The prose spec
+# (docs/segment-format.md) remains the authoritative *narrative*; this file is the authoritative
+# *data*. A change here is definitionally a format change: it must come with a format-version (or
+# layout-codec-version) bump and a golden-corpus regeneration, exactly as before.
+#
+# What is deliberately NOT here: the layout-derivation algorithm (Layouts.compute) and the
+# LayoutCodec encode/decode — algorithms stay hand-written per language and are pinned by
+# conformance vectors, not generated. Alignment arithmetic stays in util/Alignment.java (wrapping
+# Agrona); the values below are asserted equal to it by AlignmentContractTest.
+
+manifest-schema = 1
+
+[format]
+version = 1                  # FORMAT_VERSION — bump on any byte-contract change
+magic = "ASCHAMFM"           # 8 ASCII bytes; confirmed at the ascham rename
+header-length = 4096
+endianness = "little"
+# Declared contract input: the canonical schema bytes are Schema.serializeAsMessage() output from
+# this Arrow Java version. Bumping it can perturb flatbuffer emission and therefore schema_sha256
+# and every golden hash — treat any change as format-affecting (CanonicalSchemaFixtureTest is the
+# named gate that fails first).
+arrow-java-version = "19.0.0"
+
+[alignment]
+buffer-align = 64            # every buffer base is 64-byte aligned (spec invariant 5)
+page-align = 4096            # every batch stride is padded to a page (spec invariant 6)
+
+[layout-codec]
+version = 1                  # LAYOUT_CODEC_VERSION — bump when the descriptor wire format changes
+
+# ---------------------------------------------------------------------------------------------
+# Header (header-length bytes at offset 0). Gaps between fields are reserved and MUST be zero.
+# `ordering = "release-acquire"` marks the fields the writer release-stores and readers
+# acquire-load; everything else is plain (written before the atomic rename at create time).
+# `written` feeds the spec table: "create", "steady-state", or "batch-open".
+
+[header.fields]
+magic              = { offset = 0,   type = "bytes", size = 8,  written = "create", doc = "`magic` = `ASCHAMFM`" }
+format-version     = { offset = 8,   type = "i32",  written = "create", doc = "`format_version` = 1" }
+header-length      = { offset = 12,  type = "i32",  written = "create", doc = "`header_length` = 4096" }
+schema-sha256      = { offset = 16,  type = "bytes", size = 32, written = "create", doc = "`schema_sha256` — SHA-256 of the canonical schema bytes" }
+segment-sequence   = { offset = 48,  type = "i64",  written = "create", doc = "`segment_sequence` — monotonic per (table, rotation)" }
+arena-capacity     = { offset = 56,  type = "i64",  written = "create", doc = "`arena_capacity` — total file size in bytes" }
+writer-epoch       = { offset = 64,  type = "i64",  written = "create", doc = "`writer_epoch` — identifies the writing process instance" }
+batch-rows         = { offset = 72,  type = "i64",  written = "create", doc = "`batch_rows` — row capacity of each batch (`ascham.batch_rows`)" }
+batch-stride       = { offset = 80,  type = "i64",  written = "create", doc = "`batch_stride` — bytes reserved per batch" }
+heartbeat          = { offset = 128, type = "i64",  ordering = "release-acquire", written = "steady-state", doc = "`heartbeat` — liveness counter (own cache line)" }
+active-batch-count = { offset = 192, type = "i64",  ordering = "release-acquire", written = "batch-open", doc = "`active_batch_count` — number of catalog entries opened (own cache line)" }
+
+[header.region-table]
+offset = 256                 # first (offset,length) pair; pairs are contiguous from here
+entry-size = 16              # int64 offset + int64 length, both segment-relative
+regions = ["schema", "layout", "catalog", "data", "family-watermarks"]
+# Reserved in v1: slot present, offset and length both 0; populated by a future format version
+# (spec invariant 8).
+reserved = ["family-watermarks"]
+
+# ---------------------------------------------------------------------------------------------
+# Batch catalog: N = catalog_region_length / entry-size entries, each one cache line so the single
+# in-progress entry is naturally isolated from sealed ones. Reserved byte ranges MUST be zero.
+
+[catalog]
+entry-size = 64
+reserved-ranges = [[56, 64]]
+
+[catalog.fields]
+length      = { offset = 0,  type = "i64", ordering = "release-acquire", publication-point = true, in-progress-bit = 63, written = "append/seal", doc = "`length` — bit 63 set = in progress; row count in bits 0..62; the segment's sole publication point" }
+base-offset = { offset = 8,  type = "u64", written = "batch-open", doc = "`base_offset` — segment-relative offset of batch `k`'s data (`= data_region_offset + k * batch_stride`)" }
+ts-min      = { offset = 16, type = "i64", written = "seal", doc = "`ts_min` — min of `ascham.time_column` over the batch" }
+ts-max      = { offset = 24, type = "i64", written = "seal", doc = "`ts_max` — max of `ascham.time_column`" }
+stat-min    = { offset = 32, type = "i64", written = "seal", doc = "`stat_min` — min of `ascham.stats_column` (0 if no stats column)" }
+stat-max    = { offset = 40, type = "i64", written = "seal", doc = "`stat_max` — max of `ascham.stats_column` (0 if no stats column)" }
+seal-nanos  = { offset = 48, type = "i64", written = "seal", doc = "`seal_nanos` — wall-clock nanos at seal; 0 while in progress" }
+
+# ---------------------------------------------------------------------------------------------
+# Enums with explicit wire values. Java previously relied on enum ordinals here; the wire value is
+# now first-class and reordering a declaration can no longer change the format.
+
+[enums.physical-kind]
+FIXED = { value = 0, doc = "Fixed-width primitive: validity bitmap + a `width * rows` data buffer." }
+VARLEN = { value = 1, doc = "Variable-length (`Utf8`/`Binary`): validity + int32 offsets + a byte data buffer." }
+BOOL_BITMAP = { value = 2, doc = "`Bool`: validity bitmap + a data bitmap (1 bit per row), not 1 byte per row." }
+
+# ---------------------------------------------------------------------------------------------
+# The v1 supported-type profile. Accepted rows are exact: anything not matching a row is rejected
+# at load (never at append). Each row doubles as a conformance vector: the Java and C++ tests
+# construct the described Arrow type and assert classification, kind wire value, and fixed width.
+# `width` is the FIXED element width in bytes; VARLEN/BOOL_BITMAP rows have none.
+
+[types]
+accepted = [
+    { id = "bool", arrow = "Bool", kind = "BOOL_BITMAP" },
+    { id = "int8", arrow = "Int8", kind = "FIXED", width = 1 },
+    { id = "int16", arrow = "Int16", kind = "FIXED", width = 2 },
+    { id = "int32", arrow = "Int32", kind = "FIXED", width = 4 },
+    { id = "int64", arrow = "Int64", kind = "FIXED", width = 8 },
+    { id = "uint8", arrow = "UInt8", kind = "FIXED", width = 1 },
+    { id = "uint16", arrow = "UInt16", kind = "FIXED", width = 2 },
+    { id = "uint32", arrow = "UInt32", kind = "FIXED", width = 4 },
+    { id = "uint64", arrow = "UInt64", kind = "FIXED", width = 8 },
+    { id = "float32", arrow = "Float32", kind = "FIXED", width = 4 },
+    { id = "float64", arrow = "Float64", kind = "FIXED", width = 8 },
+    { id = "decimal128", arrow = "Decimal128", precision = 38, scale = 9, kind = "FIXED", width = 16 },
+    { id = "date32", arrow = "Date32", kind = "FIXED", width = 4 },
+    { id = "time64-ns", arrow = "Time64", unit = "NANOSECOND", kind = "FIXED", width = 8 },
+    { id = "timestamp-ns-utc", arrow = "Timestamp", unit = "NANOSECOND", timezone = "UTC", kind = "FIXED", width = 8 },
+    { id = "timestamp-us-utc", arrow = "Timestamp", unit = "MICROSECOND", timezone = "UTC", kind = "FIXED", width = 8 },
+    { id = "timestamp-ns-naive", arrow = "Timestamp", unit = "NANOSECOND", kind = "FIXED", width = 8 },
+    { id = "timestamp-us-naive", arrow = "Timestamp", unit = "MICROSECOND", kind = "FIXED", width = 8 },
+    { id = "fixed-binary-1", arrow = "FixedSizeBinary", byte-width = 1, kind = "FIXED", width = 1 },
+    { id = "fixed-binary-7", arrow = "FixedSizeBinary", byte-width = 7, kind = "FIXED", width = 7 },
+    { id = "fixed-binary-16", arrow = "FixedSizeBinary", byte-width = 16, kind = "FIXED", width = 16 },
+    { id = "fixed-binary-33", arrow = "FixedSizeBinary", byte-width = 33, kind = "FIXED", width = 33 },
+    { id = "utf8", arrow = "Utf8", kind = "VARLEN", requires-metadata = ["ascham.varlen_bytes"] },
+    { id = "binary", arrow = "Binary", kind = "VARLEN", requires-metadata = ["ascham.varlen_bytes"] },
+]
+# Rejection vectors. `reason` is a stable class, not the error text (messages stay hand-written).
+# Two rejections are deliberate design decisions, not omissions (see the prose spec): nested types
+# and dictionary encoding.
+rejected = [
+    { id = "float16", arrow = "Float16", reason = "float16" },
+    { id = "decimal256", arrow = "Decimal256", precision = 76, scale = 9, reason = "decimal-width" },
+    { id = "date64", arrow = "Date64", reason = "date-unit" },
+    { id = "time32-ms", arrow = "Time32", unit = "MILLISECOND", reason = "time-unit-width" },
+    { id = "time64-us", arrow = "Time64", unit = "MICROSECOND", reason = "time-unit-width" },
+    { id = "timestamp-s", arrow = "Timestamp", unit = "SECOND", reason = "timestamp-unit" },
+    { id = "timestamp-ms", arrow = "Timestamp", unit = "MILLISECOND", reason = "timestamp-unit" },
+    { id = "large-utf8", arrow = "LargeUtf8", reason = "large-varlen" },
+    { id = "large-binary", arrow = "LargeBinary", reason = "large-varlen" },
+    { id = "duration", arrow = "Duration", unit = "NANOSECOND", reason = "duration" },
+    { id = "interval", arrow = "Interval", reason = "interval" },
+    { id = "null", arrow = "Null", reason = "null" },
+    { id = "list", arrow = "List", child = "Int32", reason = "nested" },
+    { id = "struct", arrow = "Struct", child = "Int32", reason = "nested" },
+    { id = "map", arrow = "Map", reason = "nested" },
+    { id = "dictionary", arrow = "Dictionary", index = "Int32", value = "Utf8", reason = "dictionary" },
+]
+
+# ---------------------------------------------------------------------------------------------
+# ascham.* metadata keys, carried in the Arrow schema custom_metadata (schema level) and each
+# field's metadata (field level). Writer-side validation is strict and total: any unknown ascham.*
+# key at either level is an error. The reader is deliberately permissive (it currently consumes
+# only time_column and stats_column) — key constants are still generated for every binding.
+
+[metadata]
+prefix = "ascham."
+keys = [
+    { id = "table", level = "schema", value-type = "string", required = true, doc = "table name (required)" },
+    { id = "schema_version", level = "schema", value-type = "int", required = true, doc = "integer, bumped on any change (required)" },
+    { id = "batch_rows", level = "schema", value-type = "positive-int", required = false, default = 65536, doc = "target rows per sealed batch (default 65536)" },
+    { id = "time_column", level = "schema", value-type = "column-name", required = true, doc = "timestamp column for time-range pruning (required; drives `ts_min`/`ts_max`)" },
+    { id = "stats_column", level = "schema", value-type = "column-name", required = false, doc = "fixed-width integer column for value-range pruning (optional; drives `stat_min`/`stat_max`)" },
+    { id = "varlen_bytes", level = "field", value-type = "positive-int", required = false, doc = "byte capacity per batch for `Utf8`/`Binary` columns (required for those, forbidden on others)" },
+    { id = "sort_key", level = "field", value-type = "non-negative-int", required = false, doc = "integer ordinal, unique across columns, or absent" },
+    { id = "family", level = "field", value-type = "string", required = false, default = "base", doc = "column-family name, default `base`" },
+    { id = "ref", level = "field", value-type = "table-name", required = false, doc = "for signed `Int32` columns: name of the ref-data table this code resolves against" },
+]
+
+# ---------------------------------------------------------------------------------------------
+# Segment filename grammar. One pattern string, compiled verbatim by both java.util.regex and
+# std::regex (ECMAScript): <yyyyMMdd>.<seq>.ascham for the daily cycle, or
+# <yyyyMMdd>.<HHmm>.<minutes>m.<seq>.ascham for a sub-day cycle. The {1,9} bounds keep every
+# numeric group inside int32 before any parse. In-flight files (<name>.tmp.<epoch>.<seq>) are
+# excluded by non-match.
+
+[filenames]
+extension = ".ascham"
+segment-pattern = '^(\d{8})\.(?:(\d{4})\.(\d{1,9})m\.)?(\d{1,9})\.ascham$'

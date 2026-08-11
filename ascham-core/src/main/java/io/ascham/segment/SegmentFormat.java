@@ -1,12 +1,16 @@
+// GENERATED from spec/format-manifest.toml (sha256 c85825dcb549) by spec/generate_format.py — DO NOT EDIT.
+// Regenerate with: python3 spec/generate_format.py --lang java --repo .
 package io.ascham.segment;
 
 import java.nio.charset.StandardCharsets;
+import java.util.regex.Pattern;
 
 /**
- * Every segment-format constant in one place. Authoritative source is
- * {@code docs/segment-format.md}; each field below cites its offset there. Nothing in this file may
- * change without a {@link #FORMAT_VERSION} bump once any segment has been written — it is the
- * cross-language byte contract.
+ * Every segment-format constant in one place, generated from the machine-readable contract
+ * in {@code spec/format-manifest.toml}; each field below cites its offset in
+ * {@code docs/segment-format.md}. Nothing in this file may change without a
+ * {@link #FORMAT_VERSION} bump once any segment has been written — it is the cross-language
+ * byte contract.
  *
  * <p>All multi-byte values are little-endian. All offsets written into the header region table and
  * every catalog {@code base_offset} are segment-relative (spec invariant 4: never a pointer).
@@ -64,6 +68,23 @@ public final class SegmentFormat {
      */
     public static final long IN_PROGRESS_BIT = 1L << 63;
     public static final long ROW_COUNT_MASK = Long.MAX_VALUE;
+
+    /** Layout descriptor codec version (docs/segment-format.md "Layout descriptor region"). */
+    public static final int LAYOUT_CODEC_VERSION = 1;
+
+    /** Buffer-base alignment (spec invariant 5). Mirrored by {@code util.Alignment}; asserted equal there. */
+    public static final int BUFFER_ALIGN = 64;
+
+    /** Batch-stride alignment (spec invariant 6). Mirrored by {@code util.Alignment}; asserted equal there. */
+    public static final int PAGE_ALIGN = 4096;
+
+    /**
+     * Segment filename grammar: {@code <yyyyMMdd>.<seq>.ascham} (daily cycle) or
+     * {@code <yyyyMMdd>.<HHmm>.<minutes>m.<seq>.ascham} (sub-day). Groups: date, start HHmm,
+     * cycle minutes, sequence. The {1,9} bounds keep every numeric group inside int32 before any
+     * parse; in-flight {@code *.tmp.*} files are excluded by non-match.
+     */
+    public static final Pattern SEGMENT_FILENAME_PATTERN = Pattern.compile("^(\\d{8})\\.(?:(\\d{4})\\.(\\d{1,9})m\\.)?(\\d{1,9})\\.ascham$");
 
     private SegmentFormat() {
     }

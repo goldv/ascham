@@ -28,7 +28,9 @@ public final class GoldenCorpusGenerator {
 
         Files.createDirectories(dir.resolve("schemas"));
         Files.createDirectories(dir.resolve("golden"));
+        Files.createDirectories(dir.resolve("expected"));
         StringBuilder manifest = new StringBuilder("{\n  \"cases\": [\n");
+        StringBuilder schemaHashes = new StringBuilder("{\n  \"cases\": {\n");
 
         for (int i = 0; i < cases.size(); i++) {
             GoldenCase c = cases.get(i);
@@ -36,8 +38,14 @@ public final class GoldenCorpusGenerator {
             Files.deleteIfExists(bin);
             buildSegment(c, bin);
             byte[] segment = Files.readAllBytes(bin);
-            Files.write(dir.resolve("schemas").resolve(c.name() + ".arrows"),
-                    CanonicalSchema.canonicalBytes(c.schema()));
+            byte[] schemaBytes = CanonicalSchema.canonicalBytes(c.schema());
+            Files.write(dir.resolve("schemas").resolve(c.name() + ".arrows"), schemaBytes);
+            // The value side of the contract: what any reader must decode the golden bytes to.
+            Files.writeString(dir.resolve("expected").resolve(c.name() + ".csv"), CsvExpected.render(bin));
+            // Schema identity without an Arrow dependency (schema_sha256 as hex, per case).
+            schemaHashes.append("    \"").append(c.name()).append("\": \"")
+                    .append(Sha256.toHex(Sha256.hash(schemaBytes))).append('"')
+                    .append(i < cases.size() - 1 ? ",\n" : "\n");
 
             manifest.append("    {\"name\":\"").append(c.name())
                     .append("\",\"schema\":\"schemas/").append(c.name()).append(".arrows\"")
@@ -51,7 +59,9 @@ public final class GoldenCorpusGenerator {
                     .append(i < cases.size() - 1 ? ",\n" : "\n");
         }
         manifest.append("  ]\n}\n");
+        schemaHashes.append("  }\n}\n");
         Files.writeString(dir.resolve("manifest.json"), manifest.toString());
+        Files.writeString(dir.resolve("schema_hashes.json"), schemaHashes.toString());
         System.out.println("Wrote " + cases.size() + " golden cases to " + dir);
     }
 

@@ -1,3 +1,5 @@
+// GENERATED from spec/format-manifest.toml (sha256 c85825dcb549) by spec/generate_format.py — DO NOT EDIT.
+// Regenerate with: python3 spec/generate_format.py --lang java --repo .
 package io.ascham.schema;
 
 import java.util.Set;
