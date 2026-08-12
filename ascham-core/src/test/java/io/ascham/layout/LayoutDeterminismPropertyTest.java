@@ -3,7 +3,6 @@ package io.ascham.layout;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.ascham.schema.ArenaSchema;
-import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -28,8 +27,6 @@ class LayoutDeterminismPropertyTest {
     }
 
     private static byte[] encode(LayoutDescriptor descriptor) {
-        byte[] bytes = new byte[LayoutCodec.encodedSize(descriptor)];
-        LayoutCodec.encode(descriptor, new UnsafeBuffer(bytes), 0);
-        return bytes;
+        return LayoutCodec.encode(descriptor);
     }
 }

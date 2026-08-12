@@ -1,10 +1,11 @@
 package io.ascham.segment;
 
 import java.nio.charset.StandardCharsets;
+import java.util.regex.Pattern;
 
 /**
  * Every segment-format constant in one place. Authoritative source is
- * {@code docs/segment-format.md}; each field below cites its offset there. Nothing in this file may
+ * {@code format/segment-format.md}; each field below cites its offset there. Nothing in this file may
  * change without a {@link #FORMAT_VERSION} bump once any segment has been written — it is the
  * cross-language byte contract.
  *
@@ -17,10 +18,11 @@ public final class SegmentFormat {
     public static final byte[] MAGIC = "ASCHAMFM".getBytes(StandardCharsets.US_ASCII);
 
     public static final int MAGIC_LENGTH = 8;
-    public static final int FORMAT_VERSION = 1;
+    /** v2 (2026-08): the layout-descriptor region became a flatbuffer per format/Layout.fbs. */
+    public static final int FORMAT_VERSION = 2;
     public static final int HEADER_LENGTH = 4096;
 
-    // --- Header field offsets (see docs/segment-format.md "Header"). ---
+    // --- Header field offsets (see format/segment-format.md "Header"). ---
     public static final int HDR_MAGIC = 0;
     public static final int HDR_FORMAT_VERSION = 8;
     public static final int HDR_HEADER_LENGTH = 12;
@@ -46,7 +48,7 @@ public final class SegmentFormat {
     public static final int REGION_COUNT = 5;
     public static final int REGION_ENTRY_SIZE = 16; // int64 offset + int64 length
 
-    // --- Catalog entry offsets (see docs/segment-format.md "Batch catalog"). ---
+    // --- Catalog entry offsets (see format/segment-format.md "Batch catalog"). ---
     public static final int CATALOG_ENTRY_SIZE = 64; // one cache line
     public static final int ENT_LENGTH = 0;
     public static final int ENT_BASE_OFFSET = 8;
@@ -64,6 +66,22 @@ public final class SegmentFormat {
      */
     public static final long IN_PROGRESS_BIT = 1L << 63;
     public static final long ROW_COUNT_MASK = Long.MAX_VALUE;
+
+    /** Buffer-base alignment (spec invariant 5). Mirrored by {@code util.Alignment}; asserted equal there. */
+    public static final int BUFFER_ALIGN = 64;
+
+    /** Batch-stride alignment (spec invariant 6). Mirrored by {@code util.Alignment}; asserted equal there. */
+    public static final int PAGE_ALIGN = 4096;
+
+    /**
+     * Segment filename grammar: {@code <yyyyMMdd>.<seq>.ascham} (daily cycle) or
+     * {@code <yyyyMMdd>.<HHmm>.<minutes>m.<seq>.ascham} (sub-day). Groups: date, start HHmm,
+     * cycle minutes, sequence. The {1,9} bounds keep every numeric group inside int32 before any
+     * parse; in-flight {@code *.tmp.*} files are excluded by non-match. The C++ reader compiles
+     * the same pattern string ({@code table_dir.cpp}).
+     */
+    public static final Pattern SEGMENT_FILENAME_PATTERN =
+            Pattern.compile("^(\\d{8})\\.(?:(\\d{4})\\.(\\d{1,9})m\\.)?(\\d{1,9})\\.ascham$");
 
     private SegmentFormat() {
     }

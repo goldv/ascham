@@ -74,8 +74,10 @@ public final class SegmentWriter implements AutoCloseable {
         }
         byte[] schemaBytes = CanonicalSchema.canonicalBytes(schema);
         byte[] sha = Sha256.hash(schemaBytes);
-        int layoutSize = LayoutCodec.encodedSize(layout);
-        Regions regions = computeRegions(schemaBytes.length, layoutSize, maxBatches, layout.batchStrideBytes());
+        // Flatbuffers builds bottom-up, so the descriptor is encoded first and the region sized
+        // from the buffer's own length (v1 sized the region up front via encodedSize).
+        byte[] layoutBytes = LayoutCodec.encode(layout);
+        Regions regions = computeRegions(schemaBytes.length, layoutBytes.length, maxBatches, layout.batchStrideBytes());
         long totalSize = regions.dataOffset() + regions.dataLength();
 
         Path tmp = path.resolveSibling(path.getFileName() + ".tmp." + epoch + "." + sequence);
@@ -84,7 +86,7 @@ public final class SegmentWriter implements AutoCloseable {
             SegmentHeader.writeInitial(file.control(), sha, sequence, totalSize, epoch,
                     schema.metadata().batchRows(), layout.batchStrideBytes(), regions);
             file.control().putBytes((int) regions.schemaOffset(), schemaBytes);
-            LayoutCodec.encode(layout, file.data(), (int) regions.layoutOffset());
+            file.control().putBytes((int) regions.layoutOffset(), layoutBytes);
             Files.move(tmp, path, StandardCopyOption.ATOMIC_MOVE);
             file.renamedTo(path);
         } catch (IOException e) {
@@ -171,7 +173,7 @@ public final class SegmentWriter implements AutoCloseable {
     }
 
     /**
-     * Region placement (see docs/segment-format.md "Create-time sizing"). Header is fixed at 4096;
+     * Region placement (see format/segment-format.md "Create-time sizing"). Header is fixed at 4096;
      * schema, descriptor, and catalog are 64-aligned; the data region is page-aligned.
      */
     static Regions computeRegions(int schemaLength, int layoutLength, int maxBatches, long batchStride) {

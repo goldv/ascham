@@ -5,7 +5,7 @@ requirements spec. This document records the design decisions, module architectu
 mechanisms, and milestone-by-milestone implementation plan for building the arena: a
 single-writer, multi-reader, shared-memory columnar ingest layer in `/dev/shm` whose byte layout
 is derived entirely from an Apache Arrow schema. The exact byte-level format contract is the M0
-deliverable (`docs/segment-format.md`), produced from §3–§4 of this plan and reviewed before any
+deliverable (`format/segment-format.md`), produced from §3–§4 of this plan and reviewed before any
 implementation code is written.
 
 ---
@@ -111,7 +111,7 @@ io.ascham.util     — Alignment, Sha256
 ### segment (M2)
 
 - `SegmentFormat` — every constant in one file, each commented with a pointer to
-  `docs/segment-format.md` and the invariant it serves: `MAGIC="ASCHAMFM"`, `FORMAT_VERSION=1`,
+  `format/segment-format.md` and the invariant it serves: `MAGIC="ASCHAMFM"`, `FORMAT_VERSION=1`,
   `HEADER_LENGTH=4096`; header offsets (magic 0, version 8, headerLen 12, schemaSha256 16,
   segmentSeq 48, capacity 56, epoch 64, **heartbeat 128 — alone on its cache line**, region table
   192 with a **reserved family-watermarks slot**, §4c); `CATALOG_ENTRY_SIZE=64` with entry offsets
@@ -181,7 +181,7 @@ capacity-triggered rotation** (which the design already provides) — a logical 
 ≤2 GB segments, exactly as the multi-segment reader tier already expects. The whole file is mapped
 once as a direct buffer; `ControlRegion` (VarHandle) provides ordered access and an Agrona
 `UnsafeBuffer` over the same memory provides plain/bulk data access. This leaves the on-disk byte
-format (`docs/segment-format.md`) unchanged and confines the limit behind `SegmentFile`, so a true
+format (`format/segment-format.md`) unchanged and confines the limit behind `SegmentFile`, so a true
 large-mapping backend (reflective `map0`, or FFM once non-preview on the target JDK) can drop in
 without touching the format or the writer/reader. `SegmentWriter.createSegment` rejects a requested
 capacity above `Integer.MAX_VALUE` with a message pointing at rotation.
@@ -246,7 +246,7 @@ retry. Row-count seal is the cheap `beginRow()` check.
 
 **Families (invariant 8):** modeled from day one — `ColumnLayout.familyId`, descriptor `families`
 list, a reserved `family_watermarks` region-table slot (0/0 in v1, specified in
-`docs/segment-format.md` for a future format version), and one reader seam:
+`format/segment-format.md` for a future format version), and one reader seam:
 `rowCount[k] = watermarks.resolve(k, rawLength[k])` where v1 `Watermarks` is identity and a future
 one takes min across the family table. v1 writer rejects >1 family at create.
 
@@ -268,7 +268,7 @@ min/max at type bounds (Decimal128 ±(2¹²⁷−1), unsigned maxima).
 
 ## 5. Milestones
 
-**M0 — format spec (stop for review).** Write `docs/segment-format.md`: exact header/catalog byte
+**M0 — format spec (stop for review).** Write `format/segment-format.md`: exact header/catalog byte
 tables from §3, bit-63 semantics, little-endian, 64-byte alignment + 4 KiB stride rules, the eight
 invariants verbatim with format-level consequences, type profile + the two documented rejections
 (nested, dictionary), metadata key table, create-time temp-file+rename atomicity, in-progress
@@ -364,7 +364,7 @@ intra-segment boundary), `RollingAppenderAllocationTest` (rolling path stays all
    leave the entry's 8 spare bytes alone.
 4. **Torn/stale non-`length` catalog fields** — safe only because `base_offset` publishes before
    the first IN_PROGRESS release and stats/`seal_nanos` are meaningful only after bit-63 clears;
-   this reasoning goes in `docs/segment-format.md`, jcstress case 2 pins it.
+   this reasoning goes in `format/segment-format.md`, jcstress case 2 pins it.
 5. **/dev/shm in CI** — 64 MB Docker default; configurable segment dir for correctness tests, tiny
    capacities + preflight-skip for shm-dependent ones.
 6. **`byteBufferViewVarHandle` alignment traps** — runtime throws on misalignment; constructor

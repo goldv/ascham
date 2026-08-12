@@ -10,9 +10,17 @@ java {
     }
 }
 
+// Checked-in flatc output from format/Layout.fbs (dev/update_flatbuffers.sh regenerates it).
+// Generated at development time, never during the build — the arrow-java arrow-format pattern.
+sourceSets["main"].java.srcDir("src/generated/java")
+
 dependencies {
     // arrow-vector: schema types (Schema/Field/ArrowType) and reader-side VectorSchemaRoot views.
     api(libs.arrow.vector)
+    // flatbuffers runtime for the generated Layout.fbs bindings. Already on the classpath
+    // transitively via arrow-format; pinned explicitly so the version cannot drift from the
+    // flatc that generated src/generated/java (dev/update_flatbuffers.sh asserts the match).
+    api("com.google.flatbuffers:flatbuffers-java:25.2.10")
     // agrona: off-heap buffers (UnsafeBuffer) and >2 GB segment mapping (M2+).
     api(libs.agrona)
     implementation(libs.arrow.memory.core)
@@ -77,6 +85,31 @@ tasks.register<JavaExec>("regenerateGoldenCorpus") {
     group = "conformance"
     description = "Regenerate the golden byte corpus under conformance/"
     mainClass = "io.ascham.conformance.GoldenCorpusGenerator"
+    classpath = sourceSets["test"].runtimeClasspath
+    jvmArgs = aschamJvmArgs
+    args(conformanceDir.absolutePath)
+}
+
+// The C++ half of the cross-language conformance matrix: builds cpp/ (the reference C++ reader)
+// and runs its conformance runner against this repo's golden corpus, so a format change is
+// validated against both languages before it leaves this repo. Requires cmake + a C++20 compiler.
+tasks.register<Exec>("cppConformance") {
+    group = "conformance"
+    description = "Build and run the C++ conformance runner against conformance/"
+    workingDir = rootDir
+    commandLine("bash", "dev/run_cpp_conformance.sh")
+}
+
+tasks.named("check") {
+    dependsOn("cppConformance")
+}
+
+// Regenerates the layout conformance vectors (schema → LayoutCodec descriptor bytes). Run manually;
+// any diff is a layout-derivation or codec change, i.e. a format change.
+tasks.register<JavaExec>("regenerateLayoutVectors") {
+    group = "conformance"
+    description = "Regenerate conformance/layout_vectors.jsonl"
+    mainClass = "io.ascham.layout.LayoutVectorGenerator"
     classpath = sourceSets["test"].runtimeClasspath
     jvmArgs = aschamJvmArgs
     args(conformanceDir.absolutePath)

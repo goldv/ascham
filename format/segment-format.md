@@ -1,4 +1,4 @@
-# Arena segment format (v1)
+# Arena segment format (v2)
 
 Status: **M0 draft — review gate.** This is the on-disk / in-shared-memory byte contract. It is the
 cross-language interface: the future C++ reader and the DuckDB tier are validated against segments
@@ -46,7 +46,7 @@ offset 0
 +----------------------------------+
 | Arrow schema (IPC message bytes) |  64-aligned start; the canonical, self-describing schema
 +----------------------------------+
-| Layout descriptor (LayoutCodec)  |  64-aligned start; derived, written out for coupling-free readers
+| Layout descriptor (Layout.fbs)   |  64-aligned start; derived, written out for coupling-free readers
 +----------------------------------+
 | Batch catalog     (N * 64 bytes) |  64-aligned start; one 64-byte (one-cache-line) entry per batch
 +----------------------------------+
@@ -68,7 +68,7 @@ hold before it must rotate):
 ```
 header_off   = 0                                   ; header_len = 4096
 schema_off   = 4096                                ; schema_len = |canonical Arrow IPC schema bytes|
-layout_off   = align64(schema_off + schema_len)    ; layout_len = |LayoutCodec bytes|
+layout_off   = align64(schema_off + schema_len)    ; layout_len = |Layout.fbs flatbuffer bytes|
 catalog_off  = align64(layout_off + layout_len)    ; catalog_len = N * 64
 data_off     = alignPage(catalog_off + catalog_len); data_len   = N * batch_stride
 arena_capacity = data_off + data_len               ; = total file size
@@ -100,7 +100,7 @@ poll them). All remaining bytes in each line are reserved and MUST be written as
 | Offset | Size | Type | Field | Written | Ordering |
 |---|---|---|---|---|---|
 | 0   | 8  | 8×ASCII | `magic` = `ASCHAMFM` | at create | plain |
-| 8   | 4  | int32 | `format_version` = 1 | at create | plain |
+| 8   | 4  | int32 | `format_version` = 2 | at create | plain |
 | 12  | 4  | int32 | `header_length` = 4096 | at create | plain |
 | 16  | 32 | bytes | `schema_sha256` — SHA-256 of the canonical schema bytes | at create | plain |
 | 48  | 8  | int64 | `segment_sequence` — monotonic per (table, rotation) | at create | plain |
@@ -136,39 +136,33 @@ therefore `schema_sha256`, are insensitive to metadata insertion order. This mak
 self-describing: a reader parses the schema with a standard Arrow IPC reader and needs no build-time
 coupling to the writer. `schema_sha256` in the header is the SHA-256 of exactly these bytes.
 
-## Layout descriptor region (`LayoutCodec`)
+## Layout descriptor region (`Layout.fbs`)
 
 The layout descriptor is *derived* from the schema, but written out so a reader (including one with
-no Arrow dependency) can consume the byte layout directly without re-deriving it. Encoding is
-little-endian, sequential, no padding:
+no Arrow dependency) can consume the byte layout directly without re-deriving it.
 
-| Order | Type | Field |
-|---|---|---|
-| 1 | int32 | `codec_version` = 1 |
-| 2 | int32 | `batch_rows` |
-| 3 | int64 | `batch_stride_bytes` |
-| 4 | int32 | `family_count` |
-| 5 | `family_count` × ( int32 `len` + `len` UTF-8 bytes ) | family names, indexed by `family_id` |
-| 6 | int32 | `column_count` |
-| 7 | `column_count` × *column record* | per-column layout, in schema ordinal order |
+Since format version 2, the region holds exactly one **Flatbuffers buffer** whose wire structure is
+defined by [`Layout.fbs`](Layout.fbs) in this directory — the IDL is authoritative for this region,
+the same split Arrow itself uses (IDL for the metadata envelope, prose for the physical layout).
+The root table is `io.ascham.flatbuf.LayoutDescriptor`, file identifier `ALD2`; the region length
+in the header's region table is the buffer length, and the region's 64-aligned base satisfies
+flatbuffers alignment. Language bindings are generated at development time and checked in (flatc
+for Java, flatcc for C — see `README.md` here); readers over untrusted memory MUST run the
+flatbuffers verifier before any accessor.
 
-Each **column record**:
+**Canonical encoding.** The writer builds with `forceDefaults(true)`, writes table fields via the
+generated `create*` helpers (fixed slot order), and builds vectors in ordinal order, so identical
+descriptors always serialize to identical bytes — pinned by `conformance/layout_vectors.jsonl` and
+the Java determinism property test.
 
-| Type | Field | Notes |
-|---|---|---|
-| int32 + bytes | `name` (len-prefixed UTF-8) | Arrow field name |
-| int32 | `ordinal` | schema position |
-| int32 | `kind` | `0`=FIXED, `1`=VARLEN, `2`=BOOL_BITMAP |
-| int32 | `family_id` | index into the family-name table |
-| int32 | `element_width` | fixed byte width; `0` for VARLEN/BOOL_BITMAP |
-| int64 | `validity_offset` | batch-relative, 64-aligned |
-| int64 | `data_offset` | batch-relative, 64-aligned (VARLEN: the byte data buffer) |
-| int64 | `data_capacity_bytes` | |
-| int64 | `offsets_offset` | batch-relative, 64-aligned; `-1` if not VARLEN |
-| int64 | `varlen_capacity_bytes` | `ascham.varlen_bytes`; `0` if not VARLEN |
+**Evolution.** Adding an optional field with a default to `Layout.fbs` is a compatible change (old
+readers ignore it); anything else — removing, renumbering, retyping a field, or changing enum
+values — is a format break requiring a `format_version` bump and a golden-corpus regeneration.
+Enum wire values in the IDL (`PhysicalKind`: `0`=Fixed, `1`=Varlen, `2`=BoolBitmap) are contract.
 
 A reader may cross-check the descriptor against the embedded schema, but the descriptor is
-authoritative for byte offsets.
+authoritative for byte offsets. (Format version 1 used a bespoke little-endian sequential codec;
+v1 segments are no longer readable.)
 
 ## Batch catalog
 

@@ -1,0 +1,69 @@
+// Layout-descriptor region of an ascham segment (format version 2+).
+//
+// This file is authoritative for the wire structure of that region ONLY. Everything else — the
+// fixed header, batch catalog, data-region byte layout, alignment, and the concurrency protocol —
+// is segment-format.md, hand-implemented per language (the Arrow split: IDL for the metadata
+// envelope, prose for the physical layout).
+//
+// Explicit enum values are format contract — never reorder, never renumber. Evolution rule:
+// additive optional fields with defaults only; anything else is a FORMAT_VERSION bump plus a
+// golden-corpus regeneration.
+//
+// Canonical encoding (pinned by conformance/layout_vectors.jsonl and the Java determinism
+// property test): the writer builds with FlatBufferBuilder.forceDefaults(true), writes table
+// fields in declaration order, and builds vectors back-to-front in ordinal order, so identical
+// descriptors always serialize to identical bytes.
+//
+// Regenerate bindings after any change here:
+//   Java:  dev/update_flatbuffers.sh            (flatc, ascham repo)
+//   C:     dev/update_flatbuffers.sh            (flatcc, arrow_rdb repo, vendored copy)
+
+namespace io.ascham.flatbuf;
+
+/// Physical storage class of a column. Mirrored by the hand-written domain enums
+/// (io.ascham.layout.PhysicalKind, arena::PhysicalKind); a test on each side asserts the
+/// wire values agree with this definition.
+enum PhysicalKind : byte {
+  /// Fixed-width primitive: validity bitmap + a width*rows data buffer.
+  Fixed = 0,
+  /// Variable-length (Utf8/Binary): validity + int32 offsets + a byte data buffer.
+  Varlen = 1,
+  /// Bool: validity bitmap + a data bitmap (1 bit per row), not 1 byte per row.
+  BoolBitmap = 2,
+}
+
+/// Byte layout of one column within a batch. All offsets are batch-relative and 64-byte aligned
+/// (spec invariant 5).
+table ColumnLayout {
+  /// Arrow field name.
+  name: string (required);
+  /// Schema position.
+  ordinal: int;
+  kind: PhysicalKind;
+  /// Index into LayoutDescriptor.families.
+  family_id: int;
+  /// Fixed element byte width; 0 for Varlen/BoolBitmap.
+  element_width: int;
+  validity_offset: long;
+  /// Varlen: the byte data buffer.
+  data_offset: long;
+  data_capacity_bytes: long;
+  /// -1 = not varlen (sentinel preserved as the field default).
+  offsets_offset: long = -1;
+  /// ascham.varlen_bytes; 0 if not varlen.
+  varlen_capacity_bytes: long;
+}
+
+table LayoutDescriptor {
+  /// Must equal the header's batch_rows field (readers cross-check).
+  batch_rows: int;
+  /// Must equal the header's batch_stride field (readers cross-check).
+  batch_stride_bytes: long;
+  /// Family names, indexed by ColumnLayout.family_id (spec invariant 8).
+  families: [string] (required);
+  /// One entry per column, in schema ordinal order.
+  columns: [ColumnLayout] (required);
+}
+
+root_type LayoutDescriptor;
+file_identifier "ALD2";

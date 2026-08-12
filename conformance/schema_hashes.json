@@ -1,0 +1,12 @@
+{
+  "cases": {
+    "all_types": "23e4f6514d889d369c75008abe80f7199a1221a428b8943f6b8aa21c5a10aaa6",
+    "all_null": "e7c7761d04b4cf1aa392a2d1f0c1f97fd8f55f5819a4b69cb2638328e7ca793e",
+    "empty_batch": "e7c7761d04b4cf1aa392a2d1f0c1f97fd8f55f5819a4b69cb2638328e7ca793e",
+    "in_progress": "e7c7761d04b4cf1aa392a2d1f0c1f97fd8f55f5819a4b69cb2638328e7ca793e",
+    "varlen_exact_capacity": "ff54e13919c933c3c361920cd244642890bc9739fb418ad2a64efd04d9e10d16",
+    "varlen_empty": "27d10b42d16a421a3497c518ae2ce240afbc50244f1fb99a1a85b697f9571e4b",
+    "fixed_binary_widths": "e9be016c3150fd60e600e1359d0f26d49119f692b72db4eab560d34eea387704",
+    "type_bounds": "b5d14abd4da34bf3500b39b4dc0ee6808413d5758d42a4a0adfe1615ac06b843"
+  }
+}

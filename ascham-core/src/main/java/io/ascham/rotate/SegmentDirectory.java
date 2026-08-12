@@ -1,6 +1,7 @@
 package io.ascham.rotate;
 
 import io.ascham.segment.SegmentFile;
+import io.ascham.segment.SegmentFormat;
 import io.ascham.segment.SegmentHeader;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -39,7 +40,9 @@ import java.util.stream.Stream;
  */
 public final class SegmentDirectory {
 
-    private static final Pattern NAME = Pattern.compile("(\\d{8})\\.(?:(\\d{4})\\.(\\d+)m\\.)?(\\d+)\\.ascham");
+    // The grammar is format contract (SegmentFormat, mirrored by the C++ reader); the {1,9} bounds
+    // keep every numeric group inside int32 before Integer.parseInt runs.
+    private static final Pattern NAME = SegmentFormat.SEGMENT_FILENAME_PATTERN;
     private static final DateTimeFormatter DAY = DateTimeFormatter.ofPattern("yyyyMMdd");
     private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("HHmm");
 

@@ -17,7 +17,7 @@ import org.apache.arrow.vector.types.pojo.Field;
 
 /**
  * Sole owner of the publication protocol. Spec invariants 1–3 live here and nowhere else; see
- * {@code docs/segment-format.md} "Concurrency contract". The writer is single-threaded, so all guard
+ * {@code format/segment-format.md} "Concurrency contract". The writer is single-threaded, so all guard
  * checks are plain booleans.
  *
  * <p>Steady-state {@code beginRow}/setters/{@code endRow} allocate nothing (spec: allocation-free hot

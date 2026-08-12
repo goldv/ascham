@@ -42,7 +42,7 @@ messages without an Arrow C++ dependency).
    function API matures (recorded as v2).
 2. **New top-level directory `arena-duckdb/`, deliberately NOT a Gradle module.** It is a
    self-contained CMake/Make project (the extension-template layout) whose only coupling to the
-   rest of the repo is read-only: `docs/segment-format.md` (the contract), `conformance/` (the
+   rest of the repo is read-only: `format/segment-format.md` (the contract), `conformance/` (the
    golden corpus), and — for live tests — segments produced by the Java demo writer. This is what
    makes the planned move to its own repo a directory copy. An optional root-level convenience
    Gradle task may shell out to `make`; the canonical build is standalone.
@@ -52,8 +52,11 @@ messages without an Arrow C++ dependency).
    and the `ascham.*` metadata (`time_column`, `stats_column` — needed to target zone maps).
    nanoarrow's IPC decoder turns that flatbuffer into an `ArrowSchema` C-data tree with
    key-value metadata, from which the v1 type profile (13 closed types) maps to DuckDB
-   `LogicalType`s by hand. No Arrow C++, no flatbuffers toolchain — the spec's "C++ reader without
-   an Arrow dependency" promise, kept.
+   `LogicalType`s by hand. No Arrow C++ and no build-time flatbuffers toolchain — the spec's
+   "C++ reader without an Arrow dependency" promise, kept. (Since format v2 the layout descriptor
+   is itself a flatbuffer per `format/Layout.fbs`; the reader consumes it through checked-in
+   flatcc-generated code against the flatcc runtime already vendored via nanoarrow, so the
+   no-build-time-toolchain property still holds.)
 4. **SHA-256 via a vendored single-file implementation** for the invariant-7 hash check at open
    (DuckDB bundles mbedtls but its availability to extensions is an internal detail we don't lean
    on).

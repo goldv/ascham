@@ -229,7 +229,7 @@ Plus: `createSegment(schema, capacity, epoch)`, `seal()`, `rotate()`, `close()`,
 
 ## Milestones
 
-**M0 — spec.** Write `docs/segment-format.md` with the exact byte layout, the type profile,
+**M0 — spec.** Write `format/segment-format.md` with the exact byte layout, the type profile,
 the metadata keys, and the invariants above. **Stop and get review before writing
 implementation code.**
 
