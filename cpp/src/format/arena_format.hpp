@@ -1,6 +1,6 @@
 // Arena segment format constants and low-level load helpers.
 //
-// The authoritative byte contract is docs/segment-format.md in the ascham repo. Everything here
+// The authoritative byte contract is format/segment-format.md in the ascham repo. Everything here
 // mirrors it exactly; nothing may change without a format-version bump. This subtree
 // (src/format/) deliberately has NO DuckDB dependency — it is the reusable C++ arena reader.
 #pragma once

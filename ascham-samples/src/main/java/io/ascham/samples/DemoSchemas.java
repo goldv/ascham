@@ -12,8 +12,8 @@ import org.apache.arrow.vector.types.pojo.FieldType;
 import org.apache.arrow.vector.types.pojo.Schema;
 
 /**
- * The demo's market-data schemas: {@code quotes} (top of book) and {@code trades} (executions),
- * per docs/flight-sql-design-plan.md §7.
+ * The demo's market-data schemas: {@code quotes} (top of book) and {@code trades} (executions).
+ * See ascham-samples/README.md.
  *
  * <p>Three conventions worth knowing before reading them:
  *

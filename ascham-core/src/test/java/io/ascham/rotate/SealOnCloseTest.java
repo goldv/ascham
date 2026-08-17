@@ -18,7 +18,7 @@ import org.junit.jupiter.api.io.TempDir;
  * <p>Why this matters beyond tidiness: an unsealed batch is indistinguishable from one a live writer
  * is still filling, and its {@code ts_min/ts_max} are unpublished zeros. That blinds zone-map
  * pruning for the batch and makes it impossible for the cold-tier roller to verify that a day's
- * segments only contain that day's rows (see docs/cold-tier-design-plan.md §3, invariant I2).
+ * segments only contain that day's rows.
  */
 class SealOnCloseTest {
 

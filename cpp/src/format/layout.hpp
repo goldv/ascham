@@ -1,6 +1,6 @@
 // Decoded layout descriptor: the per-column byte layout within a batch. Read from the segment's
-// layout-descriptor region (LayoutCodec, codec version 1) so the reader needs no build-time
-// coupling to the writer. All offsets are batch-relative and 64-byte aligned.
+// layout-descriptor region — a flatbuffer per format/Layout.fbs (format v2+) — so the reader needs
+// no build-time coupling to the writer. All offsets are batch-relative and 64-byte aligned.
 #pragma once
 
 #include <cstdint>

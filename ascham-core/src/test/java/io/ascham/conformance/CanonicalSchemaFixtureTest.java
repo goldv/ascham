@@ -15,8 +15,8 @@ import org.junit.jupiter.api.TestFactory;
  * the failure is <em>named</em>: the canonical bytes are {@code Schema.serializeAsMessage()} output,
  * so an Arrow Java upgrade that perturbs flatbuffer emission shows up here first, as what it is —
  * a format break (every {@code schema_sha256} and golden hash moves with it). See
- * {@code format/segment-format.md} "Arrow schema region" and {@code arrow-java-version} in
- * {@code spec/format-manifest.toml}.
+ * {@code format/segment-format.md} "Arrow schema region"; the Arrow Java version is pinned in
+ * {@code gradle/libs.versions.toml}.
  */
 class CanonicalSchemaFixtureTest {
 

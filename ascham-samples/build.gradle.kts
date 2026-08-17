@@ -17,7 +17,7 @@ dependencies {
     testRuntimeOnly(libs.junit.platform.launcher)
 }
 
-// Same JVM flags the arena requires — see docs/arena-design-plan.md §2.
+// Same JVM flags the arena requires — see docs/java-guide.md "Setup".
 val aschamJvmArgs = listOf(
     "--add-exports=java.base/jdk.internal.misc=ALL-UNNAMED",
     "--add-opens=java.base/java.nio=ALL-UNNAMED",

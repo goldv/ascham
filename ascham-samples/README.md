@@ -1,36 +1,30 @@
 # ascham-samples
 
-Mock market data — `quotes` and `trades` — for exercising the whole stack: writer → arena →
-DuckDB queries → cold-tier roll → Iceberg.
+Mock market data — `quotes` and `trades` — for exercising the arena end to end: schema definition,
+writer, rotation, and anything you point at the resulting segments.
+
+For the API these demos use, see [`../docs/java-guide.md`](../docs/java-guide.md).
 
 ## Quick start
 
 ```sh
-# Generate three completed past days (fast — seconds, not days).
+# Live feed: 1000 events/s until Ctrl-C.
+./gradlew :ascham-samples:runWriter
+./gradlew :ascham-samples:runWriter --args="--rate 5000 --symbols AAPL,MSFT --seconds 30"
+
+# Or generate three completed past days (fast — seconds, not days).
 ./gradlew :ascham-samples:backfill --args="--days 3"
-
-# Query them live from the arena.
-duckdb -unsigned -c "LOAD 'arena-duckdb/build/arena.duckdb_extension';
-                     SET arena_dir='/dev/shm/ito';
-                     SELECT sym, count(*) n, sum(sz) volume FROM trades GROUP BY sym ORDER BY volume DESC"
-
-# Roll them into Iceberg — a local warehouse under ascham-archive/build/, no services needed.
-./gradlew :ascham-archive:archive --args="roll --arena-dir /dev/shm/ito --dest build/warehouse"
-
-# Or roll into the dev REST stack instead.
-docker compose -f dev/docker-compose.yml up -d
-./gradlew :ascham-archive:archive --args="roll --arena-dir /dev/shm/ito --dest http://localhost:8181/catalog"
 ```
 
-For a live feed instead of a backfill:
+Every main takes `--help`. Segments default to `/dev/shm/ito`, falling back to `build/segments` when
+shared memory is not writable — so the demos still run in a container with a small `/dev/shm`. Both
+accept `--dir`, `--symbols`, `--batch-rows`, `--max-batches`, `--seed`, `--quotes-per-trade` and
+`--roll-cycle`.
 
-```sh
-./gradlew :ascham-samples:runWriter                                   # 1000 events/s until Ctrl-C
-./gradlew :ascham-samples:runWriter --args="--rate 5000 --seconds 30"
-```
-
-Every main takes `--help`. Segments default to `/dev/shm/ito`, falling back to `build/segments`
-when shared memory is not writable.
+To read the segments back from Java, `SnapshotReader.open` on any file under
+`<dir>/quotes/` or `<dir>/trades/`; see the [reader section of the Java
+guide](../docs/java-guide.md#read). Querying them through DuckDB is the job of the arrow_rdb
+extension, which lives in its own repo.
 
 ## The data
 
@@ -49,41 +43,29 @@ backfill is reproducible.
 123.4567. Binary floating point accumulates error and compares badly; a scaled integer is exact.
 Divide by 10000.0 to display.
 
-The schemas declare `ascham.sort_key` on `(sym, ts)`, so the cold tier knows how to sort rolled files
-without separate configuration — the ordering travels with the data.
+The schemas declare `ascham.sort_key` on `(sym, ts)`, so a downstream tier knows how to sort rolled
+files without separate configuration — the ordering travels with the data.
 
-## Queries worth trying
-
-```sql
--- VWAP and volume by symbol
-SELECT sym, count(*) n, sum(sz) volume, round(sum(px*sz)/sum(sz)/10000.0, 4) vwap
-FROM trades GROUP BY sym ORDER BY volume DESC;
-
--- Each trade against the quote prevailing at the time
-SELECT t.sym, t.px/10000.0 trade, q.bid_px/10000.0 bid, q.ask_px/10000.0 ask
-FROM trades t ASOF JOIN quotes q ON t.sym = q.sym AND t.ts >= q.ts LIMIT 10;
-
--- Freshness: run twice a few seconds apart while runWriter is going
-SELECT count(*) FROM quotes;
-```
+`DemoSchemas.java` is worth reading as the reference for how `ascham.*` metadata is wired up,
+including the `ascham.varlen_bytes` sizing rule.
 
 ## Backfill vs live
 
-`backfill` writes whole **completed** days, ending yesterday — never today, because a day the writer
+`backfill` writes whole **completed** days, ending yesterday — never today, because a day a writer
 might still be appending to is not archivable. Each day is written through a clock pinned to that
-date, so segments rotate per day and end sealed and day-aligned: exactly the state the cold tier
-requires. That is what makes the roll demonstrable in seconds instead of days.
+date, so segments rotate per day and end sealed and day-aligned. That is what makes a downstream roll
+demonstrable in seconds instead of days.
 
-`runWriter` writes at wall-clock time into today's segment. Its data is queryable immediately but
-will not roll until the day completes.
+`runWriter` writes at wall-clock time into today's segment. Its data is queryable immediately but the
+current interval will not be complete until the day ends.
 
 ## Notes
 
-- **No writer-side retention.** Segments are reclaimed by the cold tier once their rows are durably
-  archived; count-based eviction here would delete data that was never written down.
+- **No writer-side retention.** These demos run with `Retention.none()`: segments are reclaimed by
+  whoever knows the rows are durably archived. Count-based eviction here would delete data that was
+  never written down.
 - **One arena base directory per catalog namespace.** Segment file names are only unique within one
-  arena, so two arenas rolling into the same catalog table would collide. The reclaimer records and
-  verifies which arena each roll came from and refuses to delete across that boundary — but the
-  duplicate *data* is not prevented, so don't do it.
-- After a roll, each table's newest segment stays in the arena even though it is archived: a writer
-  may still be appending to it, so it is never reclaimed.
+  arena, so two arenas rolling into the same destination table would collide. Duplicate *data* is not
+  prevented, so don't do it.
+- Both tables are written from a single thread — the arena is single-writer **per table**, and
+  `MarketDataWriter` holds one `RotatingWriter` each for `quotes` and `trades`.

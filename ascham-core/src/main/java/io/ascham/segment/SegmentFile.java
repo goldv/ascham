@@ -14,10 +14,11 @@ import org.agrona.concurrent.UnsafeBuffer;
  * goes through {@link #control()} (VarHandle, {@link ControlRegion}) and plain/bulk data access
  * through {@link #data()} (Agrona {@link UnsafeBuffer} over the same memory).
  *
- * <p>v1 caps a segment at {@link Integer#MAX_VALUE} bytes — see docs/arena-design-plan.md §4a-bis:
- * Agrona 2.x removed {@code MappedResizeableBuffer} and {@code UnsafeBuffer} is int-capacity, so
- * larger tables are handled by capacity-triggered rotation rather than a single &gt;2 GB mapping.
- * This limit lives here and nowhere else, so a large-mapping backend can drop in later.
+ * <p>v1 caps a segment at {@link Integer#MAX_VALUE} bytes: Agrona 2.x removed
+ * {@code MappedResizeableBuffer} and {@code UnsafeBuffer} is int-capacity, so larger tables are
+ * handled by capacity-triggered rotation rather than a single &gt;2 GB mapping. This is a Java
+ * implementation limit, not a format rule (format/segment-format.md, "Implementing the contract"),
+ * and it lives here and nowhere else, so a large-mapping backend can drop in later.
  */
 public final class SegmentFile implements AutoCloseable {
 
@@ -106,8 +107,7 @@ public final class SegmentFile implements AutoCloseable {
     private static void requireMappable(long size) {
         if (size > Integer.MAX_VALUE) {
             throw new IllegalArgumentException(
-                    "v1 segment capacity is capped at 2 GB (" + size + " requested); rotate to span more. "
-                            + "See docs/arena-design-plan.md §4a-bis.");
+                    "v1 segment capacity is capped at 2 GB (" + size + " requested); rotate to span more.");
         }
     }
 }

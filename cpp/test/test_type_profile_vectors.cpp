@@ -1,5 +1,5 @@
-// Type-profile conformance vectors: the v1 profile as one generated table
-// (conformance/type_profile_vectors.json, emitted from spec/format-manifest.toml). The Java
+// Type-profile conformance vectors: the v1 profile as one hand-authored, language-neutral table
+// (conformance/type_profile_vectors.json). The Java
 // writer pins TypeProfile.classify to the same file; this test pins the reader's map_field, so
 // the two languages' hand-written type enumerations can no longer drift — an accepted row must
 // map (with the expected fixed width), a rejected row must throw.

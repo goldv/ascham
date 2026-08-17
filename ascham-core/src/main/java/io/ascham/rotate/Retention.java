@@ -7,7 +7,7 @@ package io.ascham.rotate;
  * Count-based eviction deletes the oldest segments knowing nothing about whether their rows have
  * been archived, so with a cold tier in the picture it can silently destroy data that was never
  * written down. Reclamation belongs to whoever knows what has been persisted — the roll service,
- * which unlinks only after the archive commit is durable (see {@code docs/cold-tier-design-plan.md}).
+ * which unlinks only after the archive commit is durable.
  *
  * <p>{@link #emergencyBackstop(int)} keeps the old behaviour available for deployments with no
  * archiver, or as a last line of defence against exhausting {@code /dev/shm} when the archiver has

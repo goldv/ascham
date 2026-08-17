@@ -1,5 +1,5 @@
 {
-  "_comment": "Hand-authored neutral oracle for the v1 type profile (arrow-testing gold-file pattern). Both the Java writer (TypeProfileVectorsTest) and the C++ reader (test_type_profile_vectors.cpp) are tested against these rows, so neither implementation is the authority. One row object per line, no escapes, so consumers without a JSON library can line-scan it. Changing a row is a format event: review deliberately, alongside spec/ingest-arena.md's type profile and format/segment-format.md.",
+  "_comment": "Hand-authored neutral oracle for the v1 type profile (arrow-testing gold-file pattern). Both the Java writer (TypeProfileVectorsTest) and the C++ reader (test_type_profile_vectors.cpp) are tested against these rows, so neither implementation is the authority. One row object per line, no escapes, so consumers without a JSON library can line-scan it. Changing a row is a format event: review deliberately, alongside the type profile in format/segment-format.md.",
   "physical-kind-wire": {"FIXED": 0, "VARLEN": 1, "BOOL_BITMAP": 2},
   "accepted": [
     {"id": "bool", "arrow": "Bool", "kind": "BOOL_BITMAP", "kind-wire": 2},

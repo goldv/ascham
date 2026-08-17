@@ -4,7 +4,7 @@
 // prefix of the listing, and because rdb_detach refuses to detach the newest segment, everything
 // detachable is sealed by the writer's rotation invariant. The file is a reader-side sidecar: it is
 // not part of the segment byte contract, the writer never reads it, and its name can never match
-// the segment naming regex. See docs/segment-reclaim.md.
+// the segment naming regex. See docs/cpp-guide.md, "The detach sidecar".
 #pragma once
 
 #include <cstdint>

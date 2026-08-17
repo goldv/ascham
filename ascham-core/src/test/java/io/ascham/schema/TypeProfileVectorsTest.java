@@ -21,11 +21,10 @@ import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.TestFactory;
 
 /**
- * Drives {@link TypeProfile} through the generated {@code conformance/type_profile_vectors.json}
- * (emitted from {@code spec/format-manifest.toml}). The manifest's {@code [types]} table is the
- * single enumeration of the v1 profile; this test pins the hand-written Java classification to it,
- * and the C++ reader pins its own mapping to the same file — so the profile can no longer drift
- * per language or per copy.
+ * Drives {@link TypeProfile} through {@code conformance/type_profile_vectors.json} — the
+ * hand-authored, language-neutral enumeration of the v1 profile. This test pins the hand-written
+ * Java classification to it, and the C++ reader pins its own mapping to the same file, so neither
+ * implementation is the authority and the profile can no longer drift per language or per copy.
  */
 class TypeProfileVectorsTest {
 

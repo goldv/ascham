@@ -34,7 +34,7 @@ dependencies {
     testRuntimeOnly(libs.junit.platform.launcher)
 }
 
-// JVM flags every forked JVM (test, jmh) needs — see docs/arena-design-plan.md §2:
+// JVM flags every forked JVM (test, jmh) needs — see docs/java-guide.md "Setup":
 //  - Agrona 2.x's UnsafeApi references jdk.internal.misc.Unsafe directly, so java.base must EXPORT it
 //    (an --add-opens is not enough; the failure is a linkage IllegalAccessError, not reflection).
 //  - Arrow's memory-core reflects into java.nio internals (MemoryUtil).

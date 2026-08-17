@@ -14,8 +14,7 @@ import org.junit.jupiter.api.io.TempDir;
  *
  * <p>With a cold tier, the roll service owns unlinking — it is the only component that knows what
  * has been archived. Count-based eviction inside the writer knows nothing about that, so leaving it
- * on by default would silently destroy data that was never written down
- * (docs/cold-tier-design-plan.md §8.1).
+ * on by default would silently destroy data that was never written down.
  */
 class RetentionPolicyTest {
 

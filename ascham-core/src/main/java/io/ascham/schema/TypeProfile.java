@@ -8,7 +8,8 @@ import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.types.pojo.Field;
 
 /**
- * The v1 supported-type whitelist. Accepts exactly the profile in {@code spec/ingest-arena.md}:
+ * The v1 supported-type whitelist. Accepts exactly the profile in
+ * {@code format/segment-format.md}:
  *
  * <p>{@code Bool}, {@code Int8/16/32/64}, {@code UInt8/16/32/64}, {@code Float32}, {@code Float64},
  * {@code Decimal128(p,s)}, {@code Date32}, {@code Time64(ns)}, {@code Timestamp(ns|us, tz)},

@@ -1,23 +1,26 @@
-# Arena segment format (v2)
+# The ascham segment format
 
-Status: **M0 draft — review gate.** This is the on-disk / in-shared-memory byte contract. It is the
-cross-language interface: the future C++ reader and the DuckDB tier are validated against segments
-produced to this spec (the golden corpus), so **no offset, field, or ordering rule here may change
-without a format-version bump** once any segment has been written.
+The on-disk / in-shared-memory byte contract, and the internals reference for anyone implementing
+against it. This document plus [`Layout.fbs`](Layout.fbs) in this directory are jointly
+**authoritative**: no offset, field, or ordering rule here may change without a format-version bump.
 
-Companion documents: [`../spec/ingest-arena.md`](../spec/ingest-arena.md) (requirements) and
-[`arena-design-plan.md`](arena-design-plan.md) (design rationale and milestones). Where the design
-plan sketched illustrative offsets, **this document is authoritative.**
+Read this if you need to understand how a segment is laid out, how the single-writer/many-reader
+protocol works, how to add a language binding, or how to change the format. If you only want to
+*use* an existing implementation, read [`../docs/java-guide.md`](../docs/java-guide.md) or
+[`../docs/cpp-guide.md`](../docs/cpp-guide.md) instead.
+
+Both reference implementations live in this repo — Java under `ascham-core/`, C++ under `cpp/` — and
+both are validated against the golden corpus in `conformance/` on every `./gradlew check`, so a
+format change is checked against both languages before it leaves the repo.
 
 ## Confirmed identifiers
-
-These were placeholders through M0; they were confirmed at the ascham rename. Changing any of the
-first two again is a format break.
 
 | Identifier | Value | Notes |
 |---|---|---|
 | Segment magic | `ASCHAMFM` (8 ASCII bytes) | Changing after any segment is written is a hard format break. |
+| Format version | `2` | `SegmentFormat.FORMAT_VERSION` (Java), `arena::fmt` (C++). |
 | Metadata key prefix | `ascham.*` | Carried in the Arrow schema `custom_metadata`, so it is hashed into every header. |
+| Layout file identifier | `ALD2` | Flatbuffers `file_identifier` of the layout-descriptor region. |
 | Java base package | `io.ascham` | Not part of the byte contract, but pinned alongside the above. |
 
 ## Conventions
@@ -94,8 +97,8 @@ acquire/release is needed for them.
 ## Header (4096 bytes)
 
 Fields are grouped by cache line (64 bytes). The **heartbeat** and **active_batch_count** each occupy
-their own cache line to avoid false sharing (invariant / risk: the writer updates them while readers
-poll them). All remaining bytes in each line are reserved and MUST be written as zero.
+their own cache line to avoid false sharing (the writer updates them while readers poll them). All
+remaining bytes in each line are reserved and MUST be written as zero.
 
 | Offset | Size | Type | Field | Written | Ordering |
 |---|---|---|---|---|---|
@@ -125,6 +128,9 @@ poll them). All remaining bytes in each line are reserved and MUST be written as
 | 328 | 8  | int64 | `family_watermarks_region_length` (reserved, 0 in v1) | at create | plain |
 | 336 | 3760 | — | reserved (zero) | | |
 
+The region table at offset 256 is five 16-byte `(offset, length)` entries in the fixed order
+schema, layout, catalog, data, family-watermarks.
+
 `schema_sha256` is re-verified at open against a SHA-256 computed over the embedded schema region; a
 mismatch is a hard failure (invariant 7).
 
@@ -136,40 +142,51 @@ therefore `schema_sha256`, are insensitive to metadata insertion order. This mak
 self-describing: a reader parses the schema with a standard Arrow IPC reader and needs no build-time
 coupling to the writer. `schema_sha256` in the header is the SHA-256 of exactly these bytes.
 
+The schema carries what the layout descriptor deliberately omits: logical types (decimal
+precision/scale, timestamp unit and timezone) and the `ascham.*` metadata. A reader that only needs
+to address bytes can ignore it; a reader that needs to interpret values cannot.
+
 ## Layout descriptor region (`Layout.fbs`)
 
 The layout descriptor is *derived* from the schema, but written out so a reader (including one with
 no Arrow dependency) can consume the byte layout directly without re-deriving it.
 
 Since format version 2, the region holds exactly one **Flatbuffers buffer** whose wire structure is
-defined by [`Layout.fbs`](Layout.fbs) in this directory — the IDL is authoritative for this region,
-the same split Arrow itself uses (IDL for the metadata envelope, prose for the physical layout).
-The root table is `io.ascham.flatbuf.LayoutDescriptor`, file identifier `ALD2`; the region length
-in the header's region table is the buffer length, and the region's 64-aligned base satisfies
-flatbuffers alignment. Language bindings are generated at development time and checked in (flatc
-for Java, flatcc for C — see `README.md` here); readers over untrusted memory MUST run the
-flatbuffers verifier before any accessor.
+defined by [`Layout.fbs`](Layout.fbs) — the IDL is authoritative for this region, the same split
+Arrow itself uses (IDL for the metadata envelope, prose for the physical layout). The root table is
+`io.ascham.flatbuf.LayoutDescriptor`, file identifier `ALD2`; the region length in the header's
+region table is the buffer length, and the region's 64-aligned base satisfies flatbuffers alignment.
 
-**Canonical encoding.** The writer builds with `forceDefaults(true)`, writes table fields via the
-generated `create*` helpers (fixed slot order), and builds vectors in ordinal order, so identical
-descriptors always serialize to identical bytes — pinned by `conformance/layout_vectors.jsonl` and
-the Java determinism property test.
-
-**Evolution.** Adding an optional field with a default to `Layout.fbs` is a compatible change (old
-readers ignore it); anything else — removing, renumbering, retyping a field, or changing enum
-values — is a format break requiring a `format_version` bump and a golden-corpus regeneration.
-Enum wire values in the IDL (`PhysicalKind`: `0`=Fixed, `1`=Varlen, `2`=BoolBitmap) are contract.
-
-A reader may cross-check the descriptor against the embedded schema, but the descriptor is
-authoritative for byte offsets. (Format version 1 used a bespoke little-endian sequential codec;
+A reader may cross-check the descriptor against the embedded schema, but **the descriptor is
+authoritative for byte offsets**. (Format version 1 used a bespoke little-endian sequential codec;
 v1 segments are no longer readable.)
+
+See [FlatBuffers in this format](#flatbuffers-in-this-format) for the canonical-encoding rules and
+where the generated bindings live.
+
+### Trusting the buffer
+
+A reader consuming a segment another process wrote over shared memory is reading untrusted bytes: it
+must run the generated flatbuffers **verifier** before touching any accessor, or a malformed
+descriptor becomes out-of-bounds reads.
+
+The two reference implementations differ here, deliberately:
+
+- **C++ verifies.** `LayoutDescriptor::decode` (`cpp/src/format/layout.cpp`) calls
+  `io_ascham_flatbuf_LayoutDescriptor_verify_as_root_with_identifier` before any accessor and throws
+  `FormatError` on rejection. The C++ reader is the one that maps files it did not write — hostile
+  input is in its threat model.
+- **Java does not.** `LayoutCodec.decode` checks only the `ALD2` file identifier and the region
+  length. The Java reader is used against segments written by the Java writer in the same
+  deployment; the verifier would be checking the process's own output.
+
+Any new binding intended to read segments from other writers should follow the C++ side.
 
 ## Batch catalog
 
 A fixed array of `N = catalog_region_length / 64` entries, each exactly 64 bytes (one cache line, so
-the single in-progress entry is naturally isolated from sealed ones — invariant: "one per cache
-line"). Entry `k` describes batch `k`. Entries `[0, active_batch_count)` are live; the rest are
-zero.
+the single in-progress entry is naturally isolated from sealed ones). Entry `k` describes batch `k`.
+Entries `[0, active_batch_count)` are live; the rest are zero.
 
 | Offset | Size | Type | Field |
 |---|---|---|---|
@@ -184,7 +201,7 @@ zero.
 
 **`length` and the in-progress bit.** Bit 63 set means the batch is still accumulating. The row count
 is `length & Long.MAX_VALUE`. A negative sentinel is deliberately **not** used: `-0 == 0`, so a
-zero-row in-progress batch would be indistinguishable from a sealed empty one (spec).
+zero-row in-progress batch would be indistinguishable from a sealed empty one.
 
 - In progress: `length = row_count | (1 << 63)`.
 - Sealed: `length = row_count` (bit 63 clear).
@@ -198,6 +215,11 @@ Batch `k` occupies `[base_offset, base_offset + batch_stride)`. Rows accumulate 
 capacity stride — sealing is not a copy (invariant 1: the writer never rewinds; rows below a
 published count are immutable for the life of the segment). Wasted tail space per batch is
 `batch_stride - used`, negligible when sealing on row count.
+
+Because sealing is not a copy, an explicit `seal()` opens the next batch eagerly. A segment therefore
+normally carries a trailing **empty in-progress batch** (row count 0), and a reader's batch count
+includes it. This is expected: readers tolerate empty batches, and an in-progress batch is never
+pruned. Batch 0 is opened at segment creation.
 
 Within a batch, each column's buffers sit at the batch-relative offsets from the layout descriptor.
 Buffer contents follow the Arrow memory format exactly, so reader-side `ArrowBuf` wrapping is
@@ -292,6 +314,71 @@ bumped when a writer restarts) and `heartbeat` (a counter the writer advances pe
 release-stored). A stuck in-progress batch is detectable as `length[k]` unchanged while `heartbeat`
 advances.
 
+### Implementing the contract
+
+Obligations a binding author has to honour that do not fall out of the byte tables.
+
+**Single writer *per table*, many independent readers, across processes via `mmap`.** Two tables mean
+two writers; one table means one thread. There are no locks, no atomics beyond the ordered fields
+below, and no `synchronized`/`volatile` anywhere in the reference Java implementation.
+
+**The ordered fields are exhaustively these three:** catalog `length`, header `heartbeat`, header
+`active_batch_count`. Nothing else is ordered. Every other write — data buffers, varlen offsets,
+validity bits, `base_offset`, the stats, `seal_nanos` — is a plain store made visible transitively by
+the release of `length`.
+
+**Confine ordered access to one place.** Both implementations funnel it through a single type, on
+purpose, so the memory-model reasoning lives in one file that can be reviewed as a unit:
+
+- Java: `io.ascham.segment.ControlRegion`, which owns one
+  `MethodHandles.byteBufferViewVarHandle(long[].class, LITTLE_ENDIAN)` and exposes
+  `getLongAcquire`/`putLongRelease`. It wraps a `MappedByteBuffer` over `[0, data_offset)` only.
+- C++: `arena::acquire_i64` in `arena_format.hpp`, which is
+  `std::atomic_ref<int64_t>::load(memory_order_acquire)` with an `__atomic_load_n` fallback.
+
+The Java split — a small `MappedByteBuffer` control region for ordered access, an Agrona
+`UnsafeBuffer` over the data region for plain and bulk access — exists because VarHandles need a
+`ByteBuffer` coordinate and cannot address raw mapped memory. It costs nothing, because publication
+funnels through `length` and so the data region needs no ordered access at all. It also confines the
+`sun.misc.Unsafe`-adjacent code to one class, which matters given JEP 471/498.
+
+**Ordered fields are 8-byte aligned by format construction, and you must not assume that of the
+file.** Java throws at runtime on a misaligned `VarHandle` access, so `ControlRegion`'s constructor
+probes alignment; the C++ reader validates `catalog_offset % 8` *before* its first acquire load
+through that pointer, because a hostile file can claim any offset.
+
+**Two writes are plain where they look like they should be atomic**, and are correct only under the
+single-writer rule:
+
+- `heartbeat` is bumped with a plain read followed by a release store, not an atomic increment.
+- The validity bit is set with a plain non-atomic byte OR (invariant 3). It is safe because the
+  writer only ever *sets* bits, and no other thread writes that byte — so a racing reader sees the
+  old or new byte, and both are correct for rows below the published count.
+
+If you port the writer to a language where you are tempted to make these atomic, the right response
+is to check that you have not broken the single-writer assumption.
+
+**Rotation and reclamation.** Rotating closes only the writer's mapping of the old segment; readers
+hold independent mappings and are unaffected, and the file stays on disk until something unlinks it.
+During a mid-row rotation the old and new segments are briefly mapped simultaneously — a transient
+shared-memory spike of one segment's size. Eviction is `unlink(2)` (`shm_unlink` semantics): the
+kernel refcount keeps the inode alive for readers that still have it mapped, which is exactly the
+reclamation behaviour the format wants, and is why there is no epoch reclamation or reader
+registration.
+
+**The 2 GB segment cap is a Java limitation, not a format rule.** `SegmentFile` rejects a requested
+capacity above `Integer.MAX_VALUE`, because Agrona 2.x removed `MappedResizeableBuffer` and
+`UnsafeBuffer` caps at an `int` capacity; on Java 21 the alternatives were preview APIs or reflection
+into `FileChannelImpl`. A logical table spans multiple ≤2 GB segments via capacity-triggered
+rotation, which the design provides anyway. Nothing in the byte format encodes this limit — do not
+reproduce it in a new binding.
+
+**How the invariants are pinned.** The ordering rules above are exercised directly by the jcstress
+harness in `ascham-core/src/jcstress` (`OffsetsBeforeLengthTest` for invariant 2,
+`ValidityByteRmwTest` for invariant 3, `RowCountMonotonicTest` for invariant 1, `SealBit63Test` for
+the seal publication order), and end to end by `SoakTest` (one writer, N readers, asserting no torn
+reads, monotonic row counts, and frozen-snapshot stability).
+
 ## Supported type profile (v1)
 
 Accept exactly these; reject anything else at **load** with a clear error (never fail at append):
@@ -312,11 +399,15 @@ Two rejections are deliberate design decisions, not omissions:
   positional and stream-local, which breaks stable global identifiers, random access, and
   round-tripping to Parquet.
 
+The accept/reject matrix is pinned language-neutrally by `conformance/type_profile_vectors.json`.
+
 ## Metadata keys
 
 Carried in the Arrow schema `custom_metadata` (schema level) and each field's metadata (field level),
 rather than a sidecar file — one artifact, and generic Arrow tooling can still read it. Validation is
-strict and total: any unknown `ascham.*` key is an error.
+strict and total: any unknown `ascham.*` key is an error. Keys outside the `ascham.` prefix are
+ignored and pass through untouched (they are still hashed into `schema_sha256`, since they are part
+of the canonical schema bytes).
 
 **Schema-level:**
 
@@ -339,7 +430,7 @@ strict and total: any unknown `ascham.*` key is an error.
 
 ## Invariants (correctness core)
 
-Reproduced from the spec; each has format-level consequences pinned above and, in code, a comment
+The correctness core. Each has format-level consequences pinned above and, in code, a comment
 pointing here.
 
 1. **The writer never rewinds.** Rows below a published count are immutable for the segment's life —
@@ -359,3 +450,142 @@ pointing here.
    plausible garbage, not a crash — the worst possible failure mode.
 8. **Column families have independent watermarks**, joined positionally by row index; exposed row
    count is `min(watermarks)`. Modeled in the descriptor from day one; v1 writer supports only `base`.
+
+## FlatBuffers in this format
+
+Only the layout-descriptor region is FlatBuffers. Everything else — the header, the catalog, and the
+data-region byte layout — is prose in this document, hand-implemented per language. That split is
+copied from Apache Arrow, which defines its metadata envelope in `Message.fbs` and its physical
+buffer layout in prose, and it is deliberate: the layout descriptor is the one message-shaped,
+evolving part of the format, while the header and catalog are fixed-offset structures whose whole
+point is that a reader can address them with two loads and no parsing.
+
+**Explicit enum values are contract.** `Layout.fbs` writes out `Fixed = 0`, `Varlen = 1`,
+`BoolBitmap = 2`. Never reorder, never renumber. Each language mirrors these in a hand-written domain
+enum (`io.ascham.layout.PhysicalKind`, `arena::PhysicalKind`) and a test on each side asserts the
+wire values still agree with the IDL — `PhysicalKindWireTest` in Java,
+`cpp/test/test_layout_vectors.cpp` in C++.
+
+**The encoding is canonical, and the format depends on it.** Identical descriptors must serialize to
+identical bytes, because the golden corpus compares whole segments byte-for-byte. The writer
+therefore:
+
+- builds with `FlatBufferBuilder.forceDefaults(true)`, so a field equal to its default is still
+  written out and the buffer does not change shape with the data;
+- writes table fields through the generated `create*` helpers, which emit fields in declaration
+  order;
+- builds vectors in ordinal order.
+
+This is pinned by `conformance/layout_vectors.jsonl` (520 schema → descriptor-bytes vectors) and by
+the Java layout-determinism property test. A binding that only *reads* descriptors does not need to
+reproduce this; a binding that writes them does.
+
+**Bindings are generated at development time and checked in** — there is no build-time code
+generation, following the arrow-java `arrow-format` pattern. The generated sources are ordinary
+checked-in files:
+
+| Language | Generator | Output |
+|---|---|---|
+| Java | `flatc` 25.2.10 | `ascham-core/src/generated/java/io/ascham/flatbuf/` |
+| C | `flatcc` v0.6.2, reader + verifier only | `cpp/src/format/layout_generated.h` |
+
+Never hand-edit either. Regenerate with the script below.
+
+## Regenerating the bindings
+
+One script regenerates **both** languages from `format/Layout.fbs`:
+
+```sh
+dev/update_flatbuffers.sh
+```
+
+**Java (`flatc`).** Requires `flatc` on PATH at exactly **25.2.10**; the script checks and hard-fails
+otherwise. The pin must match the `com.google.flatbuffers:flatbuffers-java` runtime in
+`ascham-core/build.gradle.kts` — which is also the version Arrow Java 19.0.0 ships against, so the
+three cannot drift independently. The script wipes and regenerates
+`ascham-core/src/generated/java/io/ascham/flatbuf/`. Release binaries:
+<https://github.com/google/flatbuffers/releases/tag/v25.2.10>.
+
+**C (`flatcc`).** Hermetic — nothing needs to be on PATH. The script clones and builds the flatcc
+compiler at **v0.6.2** in a temp directory, runs it, and prepends a "GENERATED … DO NOT EDIT" banner
+to `cpp/src/format/layout_generated.h`. The pin matches the flatcc **runtime** vendored via the
+nanoarrow amalgamation (`cpp/src/vendor/nanoarrow/src/flatcc.c`); generated code and runtime must
+agree. Flags are `--common --reader --verifier --recursive` — `--common` inlines
+`flatbuffers_common_reader.h`, which is not vendored standalone, and there is no `--builder` because
+readers never write descriptors.
+
+**The general rule for any third language:** the generator version must match the runtime version
+you link against. Pin both, assert the pin in the script, and say in a comment where the runtime
+version comes from — that comment is what stops the next person breaking it.
+
+## Adding a language binding
+
+Generating the flatbuffers bindings is the small part. Most of the format is prose, so most of a
+binding is hand-written. In order:
+
+1. **Generate the reader bindings** for `Layout.fbs` in your language and add the invocation to
+   `dev/update_flatbuffers.sh` next to the existing two, with a version pin and a comment saying
+   what the pin is tied to.
+
+2. **Hand-implement the fixed-offset parts**: header decode, region table, batch catalog, and
+   data-region addressing, from the tables in this document. Both existing mirrors are small and
+   worth reading side by side — `io.ascham.segment.SegmentFormat` (Java) and
+   `cpp/src/format/arena_format.hpp` (C++, which also carries the `load_le<T>`, `acquire_i64`,
+   `row_count_of` and `is_in_progress` helpers).
+
+3. **Implement the reader snapshot protocol exactly** as specified below: acquire-load
+   `active_batch_count` once, then each entry's `length` once, then freeze. Re-reading is the bug
+   this protocol exists to prevent.
+
+4. **Mirror the `PhysicalKind` wire values** in a native enum and add a test asserting they match the
+   IDL, as both existing implementations do.
+
+5. **Decide your trust boundary.** If your reader will map segments other processes wrote, run the
+   flatbuffers verifier and bounds-check every offset you take out of the descriptor. See
+   [Trusting the buffer](#trusting-the-buffer) and the hardening in `cpp/src/format/segment_reader.cpp`
+   (`require_in_bounds` in its overflow-safe form, `validate_layout`, varlen offset validation, and
+   the `catalog_offset % 8` check that runs *before* the first acquire load).
+
+6. **Validate against `conformance/`.** This is the acceptance test for a new binding, and it is
+   deliberately language-neutral:
+
+   | Fixture | What it pins |
+   |---|---|
+   | `golden/*.bin` + `manifest.json` | 8 whole segments, with SHA-256s — the byte contract |
+   | `schemas/*.arrows` + `schema_hashes.json` | canonical schema bytes and their hashes |
+   | `expected/*.csv` | decoded row values per case |
+   | `layout_vectors.jsonl` | 520 schema → descriptor-byte vectors |
+   | `type_profile_vectors.json` | accepted/rejected types — hand-authored, so neither existing implementation is the authority |
+
+   The corpus covers every supported type plus empty batch, all-null, varlen at exact capacity,
+   varlen migration, varlen empty strings, `FixedSizeBinary` widths {1, 7, 16, 33}, an in-progress
+   batch mid-append, and type bounds including `Decimal128` ±(2¹²⁷−1).
+
+7. **Wire your runner into `./gradlew check`**, as the C++ side does via the `cppConformance` task
+   and `dev/run_cpp_conformance.sh`. A binding that is not run on every build will rot.
+
+## Extending the format
+
+**The one compatible change** is adding an optional field with a default to a `Layout.fbs` table. Old
+readers ignore it; old segments still decode. The reserved family-watermarks region-table slot
+(offset 320, currently 0/0) is the worked example of extension room designed in ahead of time.
+
+**Everything else is a format break**: removing, renumbering or retyping a `Layout.fbs` field,
+changing an enum's wire value, or changing any byte rule in this document — header offsets, catalog
+layout, alignment, publication order, the type profile.
+
+Breaking the format is allowed; doing it silently is not. The procedure:
+
+1. Bump `FORMAT_VERSION` in `io.ascham.segment.SegmentFormat` **and** `cpp/src/format/arena_format.hpp`,
+   and update the value in this document's [identifier table](#confirmed-identifiers).
+2. Update this document and/or `Layout.fbs` — whichever is authoritative for the part you changed.
+3. Regenerate the bindings if `Layout.fbs` changed: `dev/update_flatbuffers.sh`.
+4. Regenerate the fixtures: `./gradlew regenerateGoldenCorpus regenerateLayoutVectors`. Review the
+   diff — **any diff to `conformance/` is the format change**, and reviewing it is how you find out
+   whether you changed more than you meant to.
+5. Run `./gradlew check`, which runs both the Java and the C++ conformance halves.
+6. Re-sync the downstream vendored copies (see `cpp/README.md`), in one commit naming the ascham
+   commit it came from.
+
+Because the golden corpus is checked in, an accidental format change shows up as an unexpected
+`conformance/` diff rather than as a production misread months later. That is the point of it.

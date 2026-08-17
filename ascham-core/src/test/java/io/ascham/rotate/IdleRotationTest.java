@@ -16,7 +16,7 @@ import org.junit.jupiter.api.io.TempDir;
  * <p>Rotation is otherwise only checked inside {@code append}, so a quiet table would hold
  * yesterday's segment open indefinitely. The cold-tier roller cannot archive the newest segment of a
  * live writer — it may still be appended to — so yesterday's rows would stay unarchived until the
- * next row happened to arrive (docs/cold-tier-design-plan.md §4 step 2, §8.1).
+ * next row happened to arrive.
  */
 class IdleRotationTest {
 
