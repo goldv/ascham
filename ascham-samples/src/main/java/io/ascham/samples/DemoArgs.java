@@ -62,7 +62,7 @@ final class DemoArgs {
     }
 
     int rate() {
-        return intValue("rate", 500);
+        return intValue("rate", 50);
     }
 
     int batchRows() {
@@ -102,7 +102,7 @@ final class DemoArgs {
     /** The writer's roll cycle — the duration of one segment interval (default 1d). */
     RollCycle rollCycle() {
         String raw = values.get("roll-cycle");
-        return raw == null ? RollCycle.parse("5m") : RollCycle.parse(raw);
+        return raw == null ? RollCycle.parse("1h") : RollCycle.parse(raw);
     }
 
     String stringValue(String key, String fallback) {
